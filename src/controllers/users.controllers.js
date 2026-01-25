@@ -9,7 +9,7 @@ export const userLogin = async (req, res) => {
     try {
         let user = await User.findOne({ email: email });
 
-        console.log(user);
+        // console.log(user);
         if (!user) {
             return res.status(404).send({
                 message: "User not found",
@@ -23,14 +23,19 @@ export const userLogin = async (req, res) => {
                 success: false
             });
         }
+        const accessToken = user.generateAccessToken();
+        const refreshToken = user.generateRefreshToken();
         res.send({
             message: "User logged in successfully",
             success: true,
             user: {
                 id: user._id,
                 email: user.email,
-                username: user.username
-            }
+                username: user.username,
+                role: user.role
+            },
+            accessToken: accessToken,
+            refreshToken: refreshToken
         });
     } catch (err) {
         console.error(err);

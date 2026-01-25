@@ -2,7 +2,7 @@ import express from 'express';
 import bodyParser from 'body-parser';
 import cors from 'cors';
 import connectDB from './config/db.js';
-// import dotenv from 'dotenv';
+import 'dotenv/config';
 import userrRouter from './routes/users.routes.js';
 const app = express();
 // dotenv.config();
