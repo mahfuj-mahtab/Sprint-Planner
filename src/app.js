@@ -10,7 +10,12 @@ const app = express();
 connectDB();
 // Middleware
 app.use(bodyParser.json());
-app.use(cors());
+app.use(cors({
+  origin: "http://localhost:5173",
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true // if using cookies or auth headers
+}));
 app.use('/api/v1/users', userrRouter);
 // Sample route
 app.get('/', (req, res) => {
