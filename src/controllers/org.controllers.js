@@ -95,6 +95,56 @@ export const orgGet = async (req, res) => {
     }
 
 }
+export const orgMemberAdd = async (req, res) => {
+    const { orgId } = req.params
+    const userId = req.user._id
+    const { memberId } = req.body
+    const org = await Organization.findById(orgId)
+    if (!org) {
+        return res.status(404).json({
+            message: "Organization not found",
+            success: false
+        });
+    }
+    if (org.owner_id.toString() !== userId) {
+        return res.status(403).json({
+            message: "You do not have permission to add members to this organization",
+            success: false
+        })
+    }
+    const isMemberAlready = org.members.find(member => member.user.toString() === memberId)
+    if (isMemberAlready) {
+        return res.status(400).json({
+            message: "User is already a member of this organization",
+            success: false
+        })
+    }
+    org.members.push({ user: memberId, status: 'active' })
+    await org.save()
+    res.status(200).json({
+        message: "Member added to organization successfully",
+        success: true,
+        organization: org
+    })
+
+
+}
+export const orgFetchAllMembers = async (req, res) => {
+    const { orgId } = req.params
+    const org = await Organization.findById(orgId).populate('members.user', '-password')
+    if (!org) {
+        return res.status(404).json({
+            message: "Organization not found",
+            success: false
+        });
+    
+    }
+    res.status(200).json({
+        message: "Organization members fetched successfully",
+        success: true,
+        members: org.members
+    })
+}
 
 export const addTeamToOrg = async (req, res) => {
     const { orgId } = req.params
