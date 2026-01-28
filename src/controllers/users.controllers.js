@@ -1,3 +1,4 @@
+import Organization from "../models/organization.models.js";
 import User from "../models/users.models.js";
 export const userLogin = async (req, res) => {
 
@@ -82,4 +83,16 @@ export const userRegister = async (req, res) => {
         console.error(err);
         res.status(500).send({ message: 'Server error', success: false });
     }
+}
+
+export const userProfile = async (req, res) => {
+    const user = req.user;
+    const userDetails = await User.findById(user._id).select('-password');
+    const orgDetails = await Organization.find({ owner_id: user._id }).populate('members.user', '-password');
+    res.status(200).send({
+        message: "User profile fetched successfully",
+        success: true,
+        user: userDetails,
+        organizations: orgDetails
+    });
 }

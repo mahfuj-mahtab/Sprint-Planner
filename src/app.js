@@ -4,6 +4,7 @@ import cors from 'cors';
 import connectDB from './config/db.js';
 import 'dotenv/config';
 import userrRouter from './routes/users.routes.js';
+import orgRouter from './routes/org.routes.js';
 const app = express();
 // dotenv.config();
 // Connect to database
@@ -17,6 +18,7 @@ app.use(cors({
   credentials: true // if using cookies or auth headers
 }));
 app.use('/api/v1/users', userrRouter);
+app.use('/api/v1/org', orgRouter);
 // Sample route
 app.get('/', (req, res) => {
     res.send('Hello, World!');

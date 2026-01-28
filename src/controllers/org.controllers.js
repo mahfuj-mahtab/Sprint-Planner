@@ -1,5 +1,7 @@
 import Organization from "../models/organization.models.js";
 import Team from "../models/team.models.js";
+import Sprint from "../models/sprint.models.js";
+import Task from "../models/task.models.js";
 export const orgCreate = async (req, res) => {
     const { name, description } = req.body;
     // console.log(req.user.id)
@@ -84,11 +86,12 @@ export const orgGet = async (req, res) => {
         if (!org) {
             return res.status(404).json({ message: "Organization not found", success: false });
         }
-
+        const sprints = await Sprint.find({ organization_id: orgId });
         res.status(200).json({
             message: "Organization retrieved successfully",
             success: true,
             organization: org,
+            sprints: sprints
         });
     } catch (error) {
         res.status(500).json({ message: "Error retrieving organization", error, success: false });
@@ -137,7 +140,7 @@ export const orgFetchAllMembers = async (req, res) => {
             message: "Organization not found",
             success: false
         });
-    
+
     }
     res.status(200).json({
         message: "Organization members fetched successfully",
@@ -177,5 +180,140 @@ export const addTeamToOrg = async (req, res) => {
         message: "Team added to organization successfully",
         success: true,
         team: newTeam
+    })
+}
+// export const getSprintWithTeamsAndTasks = async (req, res) => {
+//     try {
+//         const { sprintId } = req.params;
+
+//         if (!mongoose.Types.ObjectId.isValid(sprintId)) {
+//             return res.status(400).json({ message: "Invalid sprint id" });
+//         }
+
+//         const sprint = await Sprint.findById(sprintId).lean();
+
+//         if (!sprint) {
+//             return res.status(404).json({ message: "Sprint not found" });
+//         }
+
+//         // Fetch teams with tasks of this sprint
+//         const teams = await Team.aggregate([
+//             {
+//                 $match: {
+//                     organization_id: sprint.organization_id,
+//                 },
+//             },
+//             {
+//                 $lookup: {
+//                     from: "tasks",
+//                     let: { teamId: "$_id" },
+//                     pipeline: [
+//                         {
+//                             $match: {
+//                                 $expr: {
+//                                     $and: [
+//                                         { $eq: ["$team_id", "$$teamId"] },
+//                                         { $eq: ["$sprint_id", new mongoose.Types.ObjectId(sprintId)] },
+//                                     ],
+//                                 },
+//                             },
+//                         },
+//                         {
+//                             $populate: {
+//                                 path: "assignee",
+//                                 select: "name email",
+//                             },
+//                         },
+//                     ],
+//                     as: "tasks",
+//                 },
+//             },
+//         ]);
+
+//         return res.status(200).json({
+//             sprint,
+//             teams,
+//         });
+//     } catch (error) {
+//         console.error("Error fetching sprint data:", error);
+//         return res.status(500).json({ message: "Server error" });
+//     }
+// };
+
+export const getSprintDetailsEasy = async (req, res) => {
+    try {
+        const { sprintId } = req.params;
+
+        // 1. Sprint
+        const sprint = await Sprint.findById(sprintId);
+        if (!sprint) {
+            return res.status(404).json({ message: "Sprint not found" });
+        }
+
+        // 2. Teams of same org
+        const teams = await Team.find({
+            organization_id: sprint.organization_id,
+        });
+
+        // 3. Tasks of this sprint
+        const tasks = await Task.find({
+            sprint_id: sprintId,
+        })
+            .populate("assignee", "name email");
+
+        // 4. Attach tasks to teams (JS mapping)
+        const teamsWithTasks = teams.map(team => ({
+            ...team.toObject(),
+            tasks: tasks.filter(
+                task => task.team_id?.toString() === team._id.toString()
+            ),
+        }));
+
+        res.status(200).json({
+            sprint,
+            teams: teamsWithTasks,
+        });
+
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Server error" });
+    }
+};
+
+export const addSprintToOrg = async (req, res) => {
+    const { orgId } = req.params
+    const org = await Organization.findById(orgId).populate('members.user', '-password')
+    if (!org) {
+        return res.status(400).json({
+            message: "Organizatin NOt found",
+            success: false
+        })
+    }
+    //    org.members.find(member=>member.user.toString() === req.user._id) || 
+    const isMember = org.owner_id.toString() === req.user._id
+    if (!isMember) {
+        return res.status(403).json({
+            message: "You are not valid member",
+            success: false
+        })
+    }
+    const { name, startDate, endDate } = req.body
+    if (!name || !startDate || !endDate) {
+        return res.status(401).json({
+            message: "Name start date and End Date are mandatory",
+            success: false
+        })
+    }
+    const sprint = new Sprint({
+        name: name,
+        startDate: startDate,
+        endDate: endDate,
+        organization_id: orgId
+    })
+    await sprint.save()
+    res.status(201).json({
+        message: "Sprint added successfully",
+        success: true,
+        sprint: sprint
     })
 }
