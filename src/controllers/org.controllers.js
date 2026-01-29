@@ -240,7 +240,7 @@ export const addTeamToOrg = async (req, res) => {
 //     }
 // };
 
-export const getSprintDetailsEasy = async (req, res) => {
+export const getSprintDetails = async (req, res) => {
     try {
         const { sprintId } = req.params;
 
@@ -390,7 +390,7 @@ export const orgTeamCreate = async (req,res)=>{
             success:false
         })
     }
-    const {name,members} = req.body
+    const {name} = req.body
     if(!name){
         return res.status(400).json({
             message:"Team name is required",
@@ -408,12 +408,12 @@ export const orgTeamCreate = async (req,res)=>{
         name:name,
         organization_id:orgId
     })
-    for(const member of members){
-        newTeam.members.push({
-            user:member.user,
-            role:member.role
-        })
-    }
+    // for(const member of members){
+    //     newTeam.members.push({
+    //         user:member.user,
+    //         role:member.role
+    //     })
+    // }
     await newTeam.save()
     res.status(201).json({
         message:"Team created successfully",
