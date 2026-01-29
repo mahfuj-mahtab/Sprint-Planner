@@ -1,10 +1,13 @@
-import { addSprintToOrg, orgGet } from "../controllers/org.controllers.js";
+import { addSprintToOrg, deleteSprint, orgGet, orgMemberAdd, orgTeamCreate, orgTeamFetchAll, orgTeamFetchOne } from "../controllers/org.controllers.js";
 import { Router } from "express";
 import { authenticateToken } from "../middlewares/auth.middleware.js";
 
 const router = Router();
 router.get("/fetch/:orgId", authenticateToken, orgGet);
 router.post("/add/sprint/:orgId", authenticateToken, addSprintToOrg);
+router.delete("/delete/sprint/:orgId/:sprintId", authenticateToken, deleteSprint);
 
-
+router.post("/team/add/:orgId",authenticateToken, orgTeamCreate)
+router.get("/team/fetch/:orgId",authenticateToken, orgTeamFetchAll)
+router.get("/single/team/:orgId/:teamId", authenticateToken, orgTeamFetchOne )
 export default router;
