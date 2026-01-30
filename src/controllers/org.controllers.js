@@ -437,7 +437,7 @@ export const orgTeamFetchAll = async (req,res)=>{
             success:false
         })
     }
-    const teams = await Team.find({organization_id:orgId})
+    const teams = await Team.find({organization_id:orgId}).populate('members.user','-password')
     res.status(200).json({
         message:"Teams fetched successfully",
         success:true,
