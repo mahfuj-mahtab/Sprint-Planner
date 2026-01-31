@@ -253,13 +253,13 @@ export const getSprintDetails = async (req, res) => {
         // 2. Teams of same org
         const teams = await Team.find({
             organization_id: sprint.organization_id,
-        });
+        }).populate("members.user", "fullName email");
 
         // 3. Tasks of this sprint
         const tasks = await Task.find({
             sprint_id: sprintId,
         })
-            .populate("assignee", "name email");
+            .populate("assignee", "fullName email");
 
         // 4. Attach tasks to teams (JS mapping)
         const teamsWithTasks = teams.map(team => ({
@@ -471,5 +471,69 @@ export const orgTeamFetchOne = async (req,res)=>{
         message:"Team fetched successfully",
         success:true,
         team:team
+    })
+}
+export const orgAddTaskToTeamInSprint = async (req,res)=>{
+    const {orgId,sprintId} = req.params
+    const {team,name,description,status,priority,startDate, endDate,members} = req.body
+    const org = await Organization.findById(orgId)
+    if(!org){
+        return res.status(403).json({
+            message:"Org not found",
+            success:false
+        })
+    }
+    const isMember = org.owner_id.toString() === req.user._id
+    if(!isMember){
+        return res.status(403).json({
+            message:"You are not authorized to add task to this organization",
+            success:false
+        })
+    }
+    const sprint = await Sprint.findOne({_id:sprintId,organization_id:orgId})
+    if(!sprint){
+        return res.status(404).json({
+            message:"Sprint not found",
+            success:false
+        })
+    }
+    const teamObj = await Team.findOne({
+        _id:team,
+        organization_id:orgId
+    }).populate('members.user','-password')
+    if(!teamObj){
+        return res.status(404).json({
+            message:"Team not found",
+            success:false
+        })
+    }
+    for (const member of members){
+        const isMemberInTeam = teamObj.members.some(mem=>mem.user._id.toString()=== member)
+        if(!isMemberInTeam){
+            return res.status(400).json({
+                message:`Member with id ${member} is not in the team`,
+                success:false
+            })
+        }
+    }
+    const newTask = new Task({
+        title : name,
+        description,
+        status,
+        priority,
+        startDate,
+        endDate,
+        sprint_id:sprintId,
+        team_id:team,
+        organization_id:orgId
+    })
+    for(const member of members){
+        newTask.assignee.push(member)
+    }
+    await newTask.save()
+    res.status(201).json({
+        message:"Task added to team in sprint successfully",
+        success:true,
+        task:newTask
     })
 }
