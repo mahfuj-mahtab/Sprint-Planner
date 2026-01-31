@@ -2,6 +2,7 @@ import Organization from "../models/organization.models.js";
 import Team from "../models/team.models.js";
 import Sprint from "../models/sprint.models.js";
 import Task from "../models/task.models.js";
+import User from "../models/users.models.js";
 export const orgCreate = async (req, res) => {
     const { name, description } = req.body;
     // console.log(req.user.id)
@@ -82,7 +83,7 @@ export const orgGet = async (req, res) => {
     const { orgId } = req.params;
 
     try {
-        const org = await Organization.findById(orgId);
+        const org = await Organization.findById(orgId).populate('members.user', '-password');
         if (!org) {
             return res.status(404).json({ message: "Organization not found", success: false });
         }
@@ -419,6 +420,66 @@ export const orgTeamCreate = async (req,res)=>{
         message:"Team created successfully",
         success:true,
         team:newTeam
+    })
+}
+export const orgMemberAddToTeam = async (req,res)=>{
+    const {orgId,teamId} = req.params
+    // const {memberId,role} = req.body
+    const org = await Organization.findById(orgId)
+    if(!org){
+        return res.status(403).json({
+            message : "Organization not found",
+            success : false
+        })
+    }
+    const team = await Team.findOne({
+        organization_id : orgId,
+        _id : teamId
+    })
+    if(!team){
+        return res.status(403).json({
+            message : "Team not found",
+            success : false
+        })
+    }
+    const isMember = org.owner_id.toString() === req.user._id
+    if(!isMember){
+        return res.status(403).json({
+            message : "You are not authorized to view teams of this organization",
+            success : false
+        })
+    }
+    const {user,role} = req.body
+    const usr = await User.findById(user)
+    if(!usr){
+        return res.status(403).json({
+            message : "User is not valid",
+            success : false
+        })
+    }
+    const orgMember = org.members.some(m=>m.user.toString() === user)
+    if(!orgMember){
+        return res.status(403).json({
+            message : "Member is not a valid member for this organization",
+            success : false
+        })
+    }
+    const isAlreadyMember = team.members.some(m=>m.user.toString() === user)
+    if(isAlreadyMember){
+        return res.status(400).json({
+            message : "Member is already in the team",
+            success : false
+        })
+    }
+    team.members.push({
+        user : user,
+        role : role
+    })
+    await team.save()
+    res.status(200).json({
+        message : "Member added to team",
+        success : true,
+        team : team
     })
 }
 export const orgTeamFetchAll = async (req,res)=>{

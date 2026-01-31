@@ -13,7 +13,7 @@ connectDB();
 app.use(bodyParser.json());
 app.use(cors({
   origin: "http://localhost:5173",
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS","PATCH"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true // if using cookies or auth headers
 }));
