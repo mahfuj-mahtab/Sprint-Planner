@@ -268,6 +268,7 @@ export const getSprintDetails = async (req, res) => {
             tasks: tasks.filter(
                 task => task.team_id?.toString() === team._id.toString()
             ),
+            completed_task : tasks.filter(task => task.status === "Completed" && task.team_id?.toString() === team._id.toString())
         }));
 
         res.status(200).json({
