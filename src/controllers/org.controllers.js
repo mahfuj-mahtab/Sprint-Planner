@@ -695,7 +695,118 @@ export const orgAddTaskToTeamInSprint = async (req, res) => {
         task: newTask
     })
 }
-
+export const orgShowSingleTaskInSprint = async (req, res) => {
+    const { orgId, sprintId, taskId } = req.params
+    const org = await Organization.findById(orgId)
+    if (!org) {
+        return res.status(403).json({
+            message: "Org not found",
+            success: false
+        })
+    }
+    const isMember = org.owner_id.toString() === req.user._id
+    if (!isMember) {
+        return res.status(403).json({
+            message: "You are not authorized to view task of this organization",
+            success: false
+        })
+    }
+    const sprint = await Sprint.findOne({ _id: sprintId, organization_id: orgId })
+    if (!sprint) {
+        return res.status(404).json({
+            message: "Sprint not found",
+            success: false
+        })
+    }
+    const task = await Task.findOne({
+        _id: taskId,
+        sprint_id: sprintId,
+        organization_id: orgId
+    }).populate('assignee', '-password').populate('team_id', '-organization_id')
+    if (!task) {
+        return res.status(404).json({
+            message: "Task not found",
+            success: false
+        })
+    }
+    res.status(200).json({
+        message: "Task fetched successfully",
+        success: true,
+        task: task
+    })
+}
+export const orgEditTaskToTeamInSprint = async (req, res) => {
+    const { orgId, sprintId, taskId } = req.params
+    const { team, name, description, status, priority, startDate, endDate, members } = req.body
+    const org = await Organization.findById(orgId)
+    if (!org) {
+        return res.status(403).json({
+            message: "Org not found",
+            success: false
+        })
+    }
+    const isMember = org.owner_id.toString() === req.user._id
+    if (!isMember) {
+        return res.status(403).json({
+            message: "You are not authorized to add task to this organization",
+            success: false
+        })
+    }
+    const sprint = await Sprint.findOne({ _id: sprintId, organization_id: orgId })
+    if (!sprint) {
+        return res.status(404).json({
+            message: "Sprint not found",
+            success: false
+        })
+    }
+    const teamObj = await Team.findOne({
+        _id: team,
+        organization_id: orgId
+    }).populate('members.user', '-password')
+    if (!teamObj) {
+        return res.status(404).json({
+            message: "Team not found",
+            success: false
+        })
+    }
+    for (const member of members) {
+        const isMemberInTeam = teamObj.members.some(mem => mem.user._id.toString() === member)
+        if (!isMemberInTeam) {
+            return res.status(400).json({
+                message: `Member with id ${member} is not in the team`,
+                success: false
+            })
+        }
+    }
+    const task = await Task.findOne({
+        _id: taskId,
+        sprint_id: sprintId,
+        team_id: team,
+        organization_id: orgId
+    })
+    if (!task) {
+        return res.status(404).json({
+            message: "Task not found",
+            success: false
+        })
+    }
+    task.title = name || task.title
+    task.description = description || task.description
+    task.status = status || task.status
+    task.priority = priority || task.priority
+    task.startDate = startDate || task.startDate
+    task.endDate = endDate || task.endDate
+    task.assignee = []
+    for (const member of members) {
+        task.assignee.push(member)
+    }
+    await task.save()
+    res.status(201).json({
+        message: "Task edited successfully",
+        success: true,
+        task: task
+    })
+}
 export const orgDeleteTaskFromTeamInSprint = async (req, res) => {
     const { orgId, sprintId, taskId, teamId } = req.params
     // const { team, name, description, status, priority, startDate, endDate, members } = req.body
