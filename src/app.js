@@ -11,11 +11,27 @@ const app = express();
 connectDB();
 // Middleware
 app.use(bodyParser.json());
+const allowedOrigins = [
+  "https://sprint-planner-frontend-rho.vercel.app",
+  "https://www.weekwins.com",
+  "https://weekwins.com",
+  "http://localhost:3000"
+];
+
 app.use(cors({
-  origin: "http://localhost:5173",
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS","PATCH"],
+  origin: function (origin, callback) {
+    // allow server-to-server, Postman, curl
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      callback(null, origin); // 👈 MUST return the SAME origin
+    } else {
+      callback(new Error("CORS not allowed"));
+    }
+  },
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
   allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true // if using cookies or auth headers
+  credentials: true
 }));
 app.use('/api/v1/users', userrRouter);
 app.use('/api/v1/org', orgRouter);
