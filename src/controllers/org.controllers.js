@@ -102,7 +102,7 @@ export const orgGet = async (req, res) => {
 export const orgMemberAdd = async (req, res) => {
     const { orgId } = req.params
     const userId = req.user._id
-    const { memberId } = req.body
+    const { email } = req.body
     const org = await Organization.findById(orgId)
     if (!org) {
         return res.status(404).json({
@@ -116,17 +116,77 @@ export const orgMemberAdd = async (req, res) => {
             success: false
         })
     }
-    const isMemberAlready = org.members.find(member => member.user.toString() === memberId)
+    const user = await User.findOne({
+        email: email
+    })
+    if (!user) {
+        return res.status(400).json({
+            message: "User Email Is Invalid",
+            success: false
+        })
+    }
+    const isMemberAlready = org.members.find(member => member.user.toString() === user._id.toString())
     if (isMemberAlready) {
         return res.status(400).json({
             message: "User is already a member of this organization",
             success: false
         })
     }
-    org.members.push({ user: memberId, status: 'active' })
+    org.members.push({ user: user._id, status: 'active' })
     await org.save()
     res.status(200).json({
         message: "Member added to organization successfully",
+        success: true,
+        organization: org
+    })
+
+
+}
+export const orgMemberRemove = async (req, res) => {
+    const { orgId, memberId } = req.params
+    const userId = req.user._id
+    console.log(orgId, memberId)
+    // const { email } = req.body
+    const org = await Organization.findById(orgId)
+    if (!org) {
+        return res.status(404).json({
+            message: "Organization not found",
+            success: false
+        });
+    }
+    if (org.owner_id.toString() !== userId) {
+        return res.status(403).json({
+            message: "You do not have permission to add members to this organization",
+            success: false
+        })
+    }
+    const user = await User.findById(memberId)
+    if (!user) {
+        return res.status(400).json({
+            message: "User Email Is Invalid",
+            success: false
+        })
+    }
+    const isMemberAlready = org.members.find(member => member.user.toString() === user._id.toString())
+    if (!isMemberAlready) {
+        return res.status(400).json({
+            message: "User is not a member of this organization",
+            success: false
+        })
+    }
+    const isOwner = org.owner_id.toString() === user._id.toString()
+    if (isOwner) {
+        return res.status(400).json({
+            message: "Owner Cannot be deleted.",
+            success: false
+        })
+    }
+    org.members = org.members.filter((m) => m.user.toString() !== user._id.toString())
+
+    // org.members.push({ user: user._id, status: 'active' })
+    await org.save()
+    res.status(200).json({
+        message: "Member removed from organization successfully",
         success: true,
         organization: org
     })
@@ -268,7 +328,7 @@ export const getSprintDetails = async (req, res) => {
             tasks: tasks.filter(
                 task => task.team_id?.toString() === team._id.toString()
             ),
-            completed_task : tasks.filter(task => task.status === "Completed" && task.team_id?.toString() === team._id.toString())
+            completed_task: tasks.filter(task => task.status === "Completed" && task.team_id?.toString() === team._id.toString())
         }));
 
         res.status(200).json({
