@@ -15,7 +15,7 @@ const allowedOrigins = [
   "https://sprint-planner-frontend-rho.vercel.app",
   "https://www.weekwins.com",
   "https://weekwins.com",
-  "http://localhost:3000"
+  "http://localhost:5173"
 ];
 
 app.use(cors({

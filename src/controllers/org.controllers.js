@@ -87,12 +87,26 @@ export const orgGet = async (req, res) => {
         if (!org) {
             return res.status(404).json({ message: "Organization not found", success: false });
         }
+        let sprintDetails = []
         const sprints = await Sprint.find({ organization_id: orgId });
+        for (const sprint of sprints) {
+            const tasks = await Task.find({sprint_id : sprint._id, organization_id: orgId })
+            const total_tasks = tasks.length;
+            const completed_tasks = tasks.filter((task)=>task.status === "Completed").length
+            sprintDetails.push({
+                sprint: sprint,
+                total_tasks: total_tasks,
+                completed_tasks: completed_tasks
+            })
+        }
+        const teams = await Team.find({ organization_id: orgId }).populate('members.user', '-password');
         res.status(200).json({
             message: "Organization retrieved successfully",
             success: true,
             organization: org,
-            sprints: sprints
+            sprints: sprints,
+            teams: teams,
+            sprintDetails : sprintDetails
         });
     } catch (error) {
         res.status(500).json({ message: "Error retrieving organization", error, success: false });
