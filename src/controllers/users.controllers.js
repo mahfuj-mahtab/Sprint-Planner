@@ -98,23 +98,48 @@ export const userProfile = async (req, res) => {
         organizations: orgDetails
     });
 }
+export const userProfileEdit = async (req, res) => {
+    const user = req.user;
+    const { fullName } = req.body
+    const userDetails = await User.findById(user._id).select('-password');
+    if (!userDetails) {
+        res.status(400).send({
+            message: "User Not available",
+            success: false
+        });
+    }
+    if (!fullName) {
+        res.status(400).send({
+            message: "Full nane cannot be empty",
+            success: false,
+        });
+    }
+    userDetails.fullName = fullName
+    userDetails.save()
+    res.status(200).send({
+        message: "User profile edited successfully",
+        success: true,
+        user: userDetails,
+        // organizations: orgDetails
+    });
+}
 export const userLogout = async (req, res) => {
-  try {
-    const userId = req.user._id; // from auth middleware
+    try {
+        const userId = req.user._id; // from auth middleware
 
-    await User.findByIdAndUpdate(userId, {
-      $unset: { refreshToken: 1 }
-    });
+        await User.findByIdAndUpdate(userId, {
+            $unset: { refreshToken: 1 }
+        });
 
-    return res.status(200).json({
-      success: true,
-      message: "Logged out successfully"
-    });
+        return res.status(200).json({
+            success: true,
+            message: "Logged out successfully"
+        });
 
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: "Logout failed"
-    });
-  }
+    } catch (error) {
+        return res.status(500).json({
+            success: false,
+            message: "Logout failed"
+        });
+    }
 };
