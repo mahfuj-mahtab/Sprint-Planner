@@ -456,7 +456,36 @@ export const deleteSprint = async (req, res) => {
         success: true
     })
 }
-
+export const editSprint = async (req, res) => {
+    const { orgId, sprintId } = req.params
+    const org = Organization.findById(orgId)
+    const {name,startDate,endDate} = req.body
+    if (!org) {
+        return res.status(403).json({
+            message: "Org not found",
+            success: false
+        })
+    }
+    const sprint = await Sprint.findOne({
+        _id: sprintId,
+        organization_id: orgId
+    });
+    if (!sprint) {
+        return res.status(404).json({
+            message: "Sprint not found",
+            success: false
+        })
+    }
+    // await Sprint.findByIdAndDelete(sprintId)
+    sprint.name = name
+    sprint.startDate = startDate
+    sprint.endDate = endDate
+    sprint.save()
+    res.status(200).json({
+        message: "Sprint edited successfully",
+        success: true
+    })
+}
 export const orgTeamCreate = async (req, res) => {
     const { orgId } = req.params
     const org = await Organization.findById(orgId)

@@ -26,6 +26,8 @@ export const userLogin = async (req, res) => {
         }
         const accessToken = user.generateAccessToken();
         const refreshToken = user.generateRefreshToken();
+        user.refreshToken = refreshToken;
+        user.save()
         res.send({
             message: "User logged in successfully",
             success: true,
@@ -96,3 +98,23 @@ export const userProfile = async (req, res) => {
         organizations: orgDetails
     });
 }
+export const userLogout = async (req, res) => {
+  try {
+    const userId = req.user._id; // from auth middleware
+
+    await User.findByIdAndUpdate(userId, {
+      $unset: { refreshToken: 1 }
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Logged out successfully"
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Logout failed"
+    });
+  }
+};

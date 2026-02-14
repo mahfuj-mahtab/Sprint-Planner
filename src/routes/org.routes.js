@@ -1,4 +1,4 @@
-import { addSprintToOrg, deleteSprint, getSprintDetails, orgAddTaskToTeamInSprint, orgDelete, orgDeleteTaskFromTeamInSprint, orgEditTaskToTeamInSprint, orgGet, orgMemberAdd, orgMemberAddToTeam, orgMemberRemoveFromTeam, orgShowSingleTaskInSprint, orgTeamCreate, orgTeamDelete, orgTeamFetchAll, orgTeamFetchOne } from "../controllers/org.controllers.js";
+import { addSprintToOrg, deleteSprint, editSprint, getSprintDetails, orgAddTaskToTeamInSprint, orgDelete, orgDeleteTaskFromTeamInSprint, orgEditTaskToTeamInSprint, orgGet, orgMemberAdd, orgMemberAddToTeam, orgMemberRemoveFromTeam, orgShowSingleTaskInSprint, orgTeamCreate, orgTeamDelete, orgTeamFetchAll, orgTeamFetchOne } from "../controllers/org.controllers.js";
 import { Router } from "express";
 import { authenticateToken } from "../middlewares/auth.middleware.js";
 
@@ -7,6 +7,8 @@ router.get("/fetch/:orgId", authenticateToken, orgGet);
 router.post("/add/sprint/:orgId", authenticateToken, addSprintToOrg);
 router.delete("/delete/sprint/:orgId/:sprintId", authenticateToken, deleteSprint);
 router.get("/sprint/details/:sprintId", authenticateToken, getSprintDetails);
+router.patch("/edit/sprint/:orgId/:sprintId", authenticateToken, editSprint);
+
 
 router.post("/team/add/:orgId",authenticateToken, orgTeamCreate)
 router.delete("/team/delete/:orgId/:teamId", authenticateToken, orgTeamDelete)
