@@ -1,4 +1,4 @@
-import { addSprintToOrg, deleteSprint, editSprint, getSprintDetails, orgAddTaskToTeamInSprint, orgDelete, orgDeleteTaskFromTeamInSprint, orgEditTaskToTeamInSprint, orgGet, orgMemberAdd, orgMemberAddToTeam, orgMemberRemoveFromTeam, orgShowSingleTaskInSprint, orgTeamCreate, orgTeamDelete, orgTeamFetchAll, orgTeamFetchOne } from "../controllers/org.controllers.js";
+import { addSprintToOrg, deleteSprint, editSprint, getSprintDetails, orgAddPlatformInSprint, orgAddPlatformPost, orgAddPlatformStatus, orgAddTaskToTeamInSprint, orgDelete, orgDeleteTaskFromTeamInSprint, orgEditTaskToTeamInSprint, orgGet, orgMemberAdd, orgMemberAddToTeam, orgMemberRemoveFromTeam, orgShowPlatformDetails, orgShowSingleTaskInSprint, orgTeamCreate, orgTeamDelete, orgTeamFetchAll, orgTeamFetchOne } from "../controllers/org.controllers.js";
 import { Router } from "express";
 import { authenticateToken } from "../middlewares/auth.middleware.js";
 
@@ -20,4 +20,11 @@ router.post("/team/add/task/org/:orgId/sprint/:sprintId", authenticateToken, org
 router.delete("/team/delete/task/org/:orgId/sprint/:sprintId/:taskId/team/:teamId", authenticateToken, orgDeleteTaskFromTeamInSprint)
 router.get("/sprint/single/task/org/:orgId/sprint/:sprintId/:taskId", authenticateToken, orgShowSingleTaskInSprint)
 router.patch("/sprint/single/task/edit/org/:orgId/sprint/:sprintId/:taskId", authenticateToken, orgEditTaskToTeamInSprint)
+router.post("/contentPlanner/org/:orgId/add/platform/", authenticateToken, orgAddPlatformInSprint)
+router.post("/contentPlanner/org/:orgId/add/platform/status/:platformId/", authenticateToken, orgAddPlatformStatus)
+router.get("/contentPlanner/org/:orgId/show/platform/details/:platformId/", authenticateToken, orgShowPlatformDetails)
+
+router.post("/contentPlanner/org/:orgId/add/platform/post/:platformId/sprint/:sprintId/", authenticateToken, orgAddPlatformPost)
+
+
 export default router;

@@ -3,6 +3,8 @@ import Team from "../models/team.models.js";
 import Sprint from "../models/sprint.models.js";
 import Task from "../models/task.models.js";
 import User from "../models/users.models.js";
+import Platform, { PlatformStatus } from "../models/platform.models.js";
+import Post from "../models/post.models.js";
 export const orgCreate = async (req, res) => {
     const { name, description } = req.body;
     // console.log(req.user.id)
@@ -90,9 +92,9 @@ export const orgGet = async (req, res) => {
         let sprintDetails = []
         const sprints = await Sprint.find({ organization_id: orgId });
         for (const sprint of sprints) {
-            const tasks = await Task.find({sprint_id : sprint._id, organization_id: orgId })
+            const tasks = await Task.find({ sprint_id: sprint._id, organization_id: orgId })
             const total_tasks = tasks.length;
-            const completed_tasks = tasks.filter((task)=>task.status === "Completed").length
+            const completed_tasks = tasks.filter((task) => task.status === "Completed").length
             sprintDetails.push({
                 sprint: sprint,
                 total_tasks: total_tasks,
@@ -106,7 +108,7 @@ export const orgGet = async (req, res) => {
             organization: org,
             sprints: sprints,
             teams: teams,
-            sprintDetails : sprintDetails
+            sprintDetails: sprintDetails
         });
     } catch (error) {
         res.status(500).json({ message: "Error retrieving organization", error, success: false });
@@ -459,7 +461,7 @@ export const deleteSprint = async (req, res) => {
 export const editSprint = async (req, res) => {
     const { orgId, sprintId } = req.params
     const org = Organization.findById(orgId)
-    const {name,startDate,endDate} = req.body
+    const { name, startDate, endDate } = req.body
     if (!org) {
         return res.status(403).json({
             message: "Org not found",
@@ -969,5 +971,158 @@ export const orgDeleteTaskFromTeamInSprint = async (req, res) => {
         message: "Task deleted from team in sprint successfully",
         success: true,
         // task: task
+    })
+}
+
+// content planner 
+export const orgAddPlatformInSprint = async (req, res) => {
+    const { orgId } = req.params
+    const { name } = req.body
+    const org = await Organization.findById(orgId)
+    if (!org) {
+        return res.status(403).json({
+            message: "Org not found",
+            success: false
+        })
+    }
+    const isMember = org.owner_id.toString() === req.user._id
+    if (!isMember) {
+        return res.status(403).json({
+            message: "You are not authorized to add task to this organization",
+            success: false
+        })
+    }
+
+
+    const newPlatform = new Platform({
+        name: name,
+        organization_id: orgId
+    })
+
+    await newPlatform.save()
+    res.status(201).json({
+        message: "Platform added successfully",
+        success: true,
+        platform: newPlatform
+    })
+}
+
+export const orgAddPlatformStatus = async (req, res) => {
+    const { orgId, platformId } = req.params
+    const { name } = req.body
+    const org = await Organization.findById(orgId)
+    if (!org) {
+        return res.status(403).json({
+            message: "Org not found",
+            success: false
+        })
+    }
+    const platform = await Platform.findById(platformId)
+    if (!platform) {
+        return res.status(403).json({
+            message: "Platform not found",
+            success: false
+        })
+    }
+    const isMember = org.owner_id.toString() === req.user._id
+    if (!isMember) {
+        return res.status(403).json({
+            message: "You are not authorized to add task to this organization",
+            success: false
+        })
+    }
+    const newStatus = new PlatformStatus({
+        name
+    });
+    await newStatus.save();
+
+    // 5. Push the new status ID to the platform and save
+    platform.status.push(newStatus._id);
+    await platform.save();
+    res.status(201).json({
+        message: "Platform status added successfully",
+        success: true,
+        // platform: newPlatform
+    })
+}
+
+export const orgShowPlatformDetails = async (req, res) => {
+    const { orgId, platformId } = req.params
+    const org = await Organization.findById(orgId)
+    if (!org) {
+        return res.status(403).json({
+            message: "Org not found",
+            success: false
+        })
+    }
+    const platform = await Platform.findById(platformId).populate("status")
+    if (!platform) {
+        return res.status(403).json({
+            message: "Platform not found",
+            success: false
+        })
+    }
+    const isMember = org.owner_id.toString() === req.user._id
+    if (!isMember) {
+        return res.status(403).json({
+            message: "You are not authorized to add task to this organization",
+            success: false
+        })
+    }
+    res.status(201).json({
+        message: "Platform retreive successfully",
+        success: true,
+        platform: platform
+    })
+}
+
+
+export const orgAddPlatformPost = async (req, res) => {
+    const { orgId, platformId, sprintId } = req.params
+    const {name, description, status, priority, postingDate} = req.body
+
+    const org = await Organization.findById(orgId)
+    if (!org) {
+        return res.status(403).json({
+            message: "Org not found",
+            success: false
+        })
+    }
+    const platform = await Platform.findById(platformId)
+    if (!platform) {
+        return res.status(403).json({
+            message: "Platform not found",
+            success: false
+        })
+    }
+    const sprint = await Sprint.findById(sprintId)
+    if (!sprint) {
+        return res.status(403).json({
+            message: "Sprint not found",
+            success: false
+        })
+    }
+    const isMember = org.owner_id.toString() === req.user._id
+    if (!isMember) {
+        return res.status(403).json({
+            message: "You are not authorized to add task to this organization",
+            success: false
+        })
+    }
+    const newPost = new Post({
+        title: name,
+        description,
+        status,
+        priority,
+        postingDate,
+        sprint_id: sprintId,
+        organization_id: orgId,
+        platformId : platformId
+    });
+    await newPost.save();
+    res.status(201).json({
+        message: "Platform status added successfully",
+        success: true,
+        // platform: newPlatform
     })
 }
