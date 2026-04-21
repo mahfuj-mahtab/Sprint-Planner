@@ -1,18 +1,29 @@
-import { addSprintToOrg, deleteSprint, editSprint, getSprintDetails, orgAddPlatformInSprint, orgAddPlatformPost, orgAddPlatformStatus, orgAddTaskToTeamInSprint, orgDelete, orgDeleteTaskFromTeamInSprint, orgEditTaskToTeamInSprint, orgGet, orgMemberAdd, orgMemberAddToTeam, orgMemberRemoveFromTeam, orgShowPlatformDetails, orgShowSingleTaskInSprint, orgTeamCreate, orgTeamDelete, orgTeamFetchAll, orgTeamFetchOne } from "../controllers/org.controllers.js";
+import { addSprintToOrg, deleteSprint, editSprint, getSprintDetails, orgAddPlatformInSprint, orgAddPlatformPost, orgAddPlatformStatus, orgAddTaskToTeamInSprint, orgDelete, orgDeleteTaskFromTeamInSprint, orgEditTaskToTeamInSprint, orgGet, orgMemberAdd, orgMemberAddToTeam, orgMemberRemoveFromTeam, orgProjectCreate, orgProjectDelete, orgProjectDetails, orgProjectEdit, orgProjectList, orgShowPlatformDetails, orgShowSingleTaskInSprint, orgTeamCreate, orgTeamDelete, orgTeamFetchAll, orgTeamFetchOne } from "../controllers/org.controllers.js";
 import { Router } from "express";
 import { authenticateToken } from "../middlewares/auth.middleware.js";
 
 const router = Router();
 router.get("/fetch/:orgId", authenticateToken, orgGet);
+
+router.get("/:orgId/projects", authenticateToken, orgProjectList);
+router.post("/:orgId/projects", authenticateToken, orgProjectCreate);
+router.get("/:orgId/projects/:projectId", authenticateToken, orgProjectDetails);
+router.patch("/:orgId/projects/:projectId", authenticateToken, orgProjectEdit);
+router.delete("/:orgId/projects/:projectId", authenticateToken, orgProjectDelete);
+
 router.post("/add/sprint/:orgId", authenticateToken, addSprintToOrg);
+router.post("/project/:projectId/add/sprint/:orgId", authenticateToken, addSprintToOrg);
 router.delete("/delete/sprint/:orgId/:sprintId", authenticateToken, deleteSprint);
 router.get("/sprint/details/:sprintId", authenticateToken, getSprintDetails);
 router.patch("/edit/sprint/:orgId/:sprintId", authenticateToken, editSprint);
 
 
 router.post("/team/add/:orgId",authenticateToken, orgTeamCreate)
+router.post("/project/:projectId/team/add/:orgId",authenticateToken, orgTeamCreate)
 router.delete("/team/delete/:orgId/:teamId", authenticateToken, orgTeamDelete)
+router.delete("/project/:projectId/team/delete/:orgId/:teamId", authenticateToken, orgTeamDelete)
 router.get("/team/fetch/:orgId",authenticateToken, orgTeamFetchAll)
+router.get("/project/:projectId/team/fetch/:orgId",authenticateToken, orgTeamFetchAll)
 router.get("/single/team/:orgId/:teamId", authenticateToken, orgTeamFetchOne )
 router.patch("/team/:teamId/member/add/:orgId", authenticateToken, orgMemberAddToTeam)
 router.patch("/team/:teamId/member/remove/:orgId/:memberId", authenticateToken, orgMemberRemoveFromTeam)

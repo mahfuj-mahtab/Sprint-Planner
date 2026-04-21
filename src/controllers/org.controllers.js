@@ -1,10 +1,37 @@
 import Organization from "../models/organization.models.js";
+import Project from "../models/project.models.js";
 import Team from "../models/team.models.js";
 import Sprint from "../models/sprint.models.js";
 import Task from "../models/task.models.js";
 import User from "../models/users.models.js";
 import Platform, { PlatformStatus } from "../models/platform.models.js";
 import Post from "../models/post.models.js";
+
+const ensureDefaultProjectForOrg = async (orgId) => {
+    const existing = await Project.findOne({ organization_id: orgId, isArchived: false }).sort({ createdAt: 1 });
+    if (existing) return existing;
+
+    const created = new Project({
+        name: "General",
+        description: "Default project",
+        organization_id: orgId,
+    });
+    await created.save();
+    return created;
+};
+
+const backfillProjectIdsForOrg = async (orgId, projectId) => {
+    await Promise.all([
+        Sprint.updateMany(
+            { organization_id: orgId, $or: [{ project_id: { $exists: false } }, { project_id: null }] },
+            { $set: { project_id: projectId } }
+        ),
+        Team.updateMany(
+            { organization_id: orgId, $or: [{ project_id: { $exists: false } }, { project_id: null }] },
+            { $set: { project_id: projectId } }
+        ),
+    ]);
+};
 export const orgCreate = async (req, res) => {
     const { name, description } = req.body;
     // console.log(req.user.id)
@@ -89,23 +116,35 @@ export const orgGet = async (req, res) => {
         if (!org) {
             return res.status(404).json({ message: "Organization not found", success: false });
         }
-        let sprintDetails = []
-        const sprints = await Sprint.find({ organization_id: orgId });
+
+        const defaultProject = await ensureDefaultProjectForOrg(orgId);
+        await backfillProjectIdsForOrg(orgId, defaultProject._id);
+
+        const projects = await Project.find({ organization_id: orgId }).sort({ createdAt: 1 });
+        const requestedProjectId = req.query?.projectId;
+        const selectedProjectId = requestedProjectId || defaultProject._id.toString();
+
+        const sprints = await Sprint.find({ organization_id: orgId, project_id: selectedProjectId }).sort({ createdAt: -1 });
+        const teams = await Team.find({ organization_id: orgId, project_id: selectedProjectId }).populate('members.user', '-password');
+
+        const sprintDetails = [];
         for (const sprint of sprints) {
-            const tasks = await Task.find({ sprint_id: sprint._id, organization_id: orgId })
+            const tasks = await Task.find({ sprint_id: sprint._id, organization_id: orgId });
             const total_tasks = tasks.length;
-            const completed_tasks = tasks.filter((task) => task.status === "Completed").length
+            const completed_tasks = tasks.filter((task) => task.status === "Completed").length;
             sprintDetails.push({
-                sprint: sprint,
-                total_tasks: total_tasks,
-                completed_tasks: completed_tasks
-            })
+                sprint,
+                total_tasks,
+                completed_tasks,
+            });
         }
-        const teams = await Team.find({ organization_id: orgId }).populate('members.user', '-password');
+
         res.status(200).json({
             message: "Organization retrieved successfully",
             success: true,
             organization: org,
+            projects,
+            selectedProjectId,
             sprints: sprints,
             teams: teams,
             sprintDetails: sprintDetails
@@ -226,6 +265,170 @@ export const orgFetchAllMembers = async (req, res) => {
     })
 }
 
+export const orgProjectList = async (req, res) => {
+    const { orgId } = req.params;
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) {
+            return res.status(404).json({ message: "Organization not found", success: false });
+        }
+
+        const defaultProject = await ensureDefaultProjectForOrg(orgId);
+        await backfillProjectIdsForOrg(orgId, defaultProject._id);
+
+        const projects = await Project.find({ organization_id: orgId }).sort({ createdAt: 1 });
+        return res.status(200).json({ message: "Projects fetched successfully", success: true, projects });
+    } catch (error) {
+        return res.status(500).json({ message: "Error fetching projects", error, success: false });
+    }
+};
+
+export const orgProjectCreate = async (req, res) => {
+    const { orgId } = req.params;
+    const { name, description } = req.body;
+
+    if (!name) {
+        return res.status(400).json({ message: "Project name is required", success: false });
+    }
+
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) {
+            return res.status(404).json({ message: "Organization not found", success: false });
+        }
+        if (org.owner_id.toString() !== req.user._id) {
+            return res.status(403).json({ message: "You do not have permission to create projects for this organization", success: false });
+        }
+
+        const project = new Project({
+            name: name.trim(),
+            description: (description || "").trim(),
+            organization_id: orgId,
+        });
+        await project.save();
+
+        return res.status(201).json({ message: "Project created successfully", success: true, project });
+    } catch (error) {
+        const isDuplicate = error?.code === 11000;
+        return res.status(isDuplicate ? 409 : 500).json({
+            message: isDuplicate ? "A project with this name already exists" : "Error creating project",
+            error,
+            success: false,
+        });
+    }
+};
+
+export const orgProjectEdit = async (req, res) => {
+    const { orgId, projectId } = req.params;
+    const { name, description, isArchived } = req.body;
+
+    if (!name && !description && typeof isArchived !== "boolean") {
+        return res.status(400).json({ message: "Nothing to update", success: false });
+    }
+
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) {
+            return res.status(404).json({ message: "Organization not found", success: false });
+        }
+        if (org.owner_id.toString() !== req.user._id) {
+            return res.status(403).json({ message: "You do not have permission to edit projects for this organization", success: false });
+        }
+
+        const project = await Project.findOne({ _id: projectId, organization_id: orgId });
+        if (!project) {
+            return res.status(404).json({ message: "Project not found", success: false });
+        }
+
+        if (name) project.name = name.trim();
+        if (typeof description === "string") project.description = description.trim();
+        if (typeof isArchived === "boolean") project.isArchived = isArchived;
+
+        await project.save();
+        return res.status(200).json({ message: "Project updated successfully", success: true, project });
+    } catch (error) {
+        const isDuplicate = error?.code === 11000;
+        return res.status(isDuplicate ? 409 : 500).json({
+            message: isDuplicate ? "A project with this name already exists" : "Error updating project",
+            error,
+            success: false,
+        });
+    }
+};
+
+export const orgProjectDelete = async (req, res) => {
+    const { orgId, projectId } = req.params;
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) {
+            return res.status(404).json({ message: "Organization not found", success: false });
+        }
+        if (org.owner_id.toString() !== req.user._id) {
+            return res.status(403).json({ message: "You do not have permission to delete projects for this organization", success: false });
+        }
+
+        const project = await Project.findOne({ _id: projectId, organization_id: orgId });
+        if (!project) {
+            return res.status(404).json({ message: "Project not found", success: false });
+        }
+
+        const sprints = await Sprint.find({ organization_id: orgId, project_id: projectId }, { _id: 1 });
+        const sprintIds = sprints.map(s => s._id);
+
+        await Promise.all([
+            Task.deleteMany({ organization_id: orgId, $or: [{ project_id: projectId }, { sprint_id: { $in: sprintIds } }] }),
+            Sprint.deleteMany({ organization_id: orgId, project_id: projectId }),
+            Team.deleteMany({ organization_id: orgId, project_id: projectId }),
+        ]);
+        await project.deleteOne();
+
+        return res.status(200).json({ message: "Project deleted successfully", success: true });
+    } catch (error) {
+        return res.status(500).json({ message: "Error deleting project", error, success: false });
+    }
+};
+
+export const orgProjectDetails = async (req, res) => {
+    const { orgId, projectId } = req.params;
+    try {
+        const org = await Organization.findById(orgId).populate('members.user', '-password');
+        if (!org) {
+            return res.status(404).json({ message: "Organization not found", success: false });
+        }
+
+        const defaultProject = await ensureDefaultProjectForOrg(orgId);
+        await backfillProjectIdsForOrg(orgId, defaultProject._id);
+
+        const project = await Project.findOne({ _id: projectId, organization_id: orgId });
+        if (!project) {
+            return res.status(404).json({ message: "Project not found", success: false });
+        }
+
+        const sprints = await Sprint.find({ organization_id: orgId, project_id: projectId }).sort({ createdAt: -1 });
+        const teams = await Team.find({ organization_id: orgId, project_id: projectId }).populate('members.user', '-password');
+
+        const sprintDetails = [];
+        for (const sprint of sprints) {
+            const tasks = await Task.find({ sprint_id: sprint._id, organization_id: orgId });
+            const total_tasks = tasks.length;
+            const completed_tasks = tasks.filter((task) => task.status === "Completed").length;
+            sprintDetails.push({ sprint, total_tasks, completed_tasks });
+        }
+
+        return res.status(200).json({
+            message: "Project details retrieved successfully",
+            success: true,
+            organization: org,
+            project,
+            sprints,
+            teams,
+            sprintDetails,
+        });
+    } catch (error) {
+        return res.status(500).json({ message: "Error retrieving project details", error, success: false });
+    }
+};
+
 export const addTeamToOrg = async (req, res) => {
     const { orgId } = req.params
     const { teamName, members } = req.body
@@ -327,9 +530,21 @@ export const getSprintDetails = async (req, res) => {
             return res.status(404).json({ message: "Sprint not found" });
         }
 
-        // 2. Teams of same org
+        const orgId = sprint.organization_id?.toString();
+        const defaultProject = orgId ? await ensureDefaultProjectForOrg(orgId) : null;
+        if (orgId && defaultProject) {
+            await backfillProjectIdsForOrg(orgId, defaultProject._id);
+        }
+        const projectId = sprint.project_id || defaultProject?._id;
+        if (!sprint.project_id && projectId) {
+            sprint.project_id = projectId;
+            await sprint.save();
+        }
+
+        // 2. Teams of same project
         const teams = await Team.find({
             organization_id: sprint.organization_id,
+            ...(projectId ? { project_id: projectId } : {}),
         }).populate("members.user", "fullName email");
 
         // 3. Tasks of this sprint
@@ -382,11 +597,23 @@ export const addSprintToOrg = async (req, res) => {
             success: false
         })
     }
+
+    const requestedProjectId = req.params.projectId || req.body.projectId;
+    const defaultProject = await ensureDefaultProjectForOrg(orgId);
+    await backfillProjectIdsForOrg(orgId, defaultProject._id);
+
+    const projectIdToUse = requestedProjectId || defaultProject._id.toString();
+    const project = await Project.findOne({ _id: projectIdToUse, organization_id: orgId });
+    if (!project) {
+        return res.status(404).json({ message: "Project not found", success: false });
+    }
+
     const sprint = new Sprint({
         name: name,
         startDate: startDate,
         endDate: endDate,
-        organization_id: orgId
+        organization_id: orgId,
+        project_id: projectIdToUse,
     })
     await sprint.save()
     res.status(201).json({
@@ -434,12 +661,16 @@ export const editSprintInOrg = async (req, res) => {
 
 export const deleteSprint = async (req, res) => {
     const { orgId, sprintId } = req.params
-    const org = Organization.findById(orgId)
+    const org = await Organization.findById(orgId)
     if (!org) {
         return res.status(403).json({
             message: "Org not found",
             success: false
         })
+    }
+    const isMember = org.owner_id.toString() === req.user._id
+    if (!isMember) {
+        return res.status(403).json({ message: "You are not authorized to delete sprint from this organization", success: false })
     }
     const sprint = await Sprint.findOne({
         _id: sprintId,
@@ -451,7 +682,7 @@ export const deleteSprint = async (req, res) => {
             success: false
         })
     }
-    // await Sprint.findByIdAndDelete(sprintId)
+    await Task.deleteMany({ sprint_id: sprintId, organization_id: orgId });
     await sprint.deleteOne()
     res.status(200).json({
         message: "Sprint deleted successfully",
@@ -460,13 +691,17 @@ export const deleteSprint = async (req, res) => {
 }
 export const editSprint = async (req, res) => {
     const { orgId, sprintId } = req.params
-    const org = Organization.findById(orgId)
+    const org = await Organization.findById(orgId)
     const { name, startDate, endDate } = req.body
     if (!org) {
         return res.status(403).json({
             message: "Org not found",
             success: false
         })
+    }
+    const isMember = org.owner_id.toString() === req.user._id
+    if (!isMember) {
+        return res.status(403).json({ message: "You are not authorized to edit sprints of this organization", success: false })
     }
     const sprint = await Sprint.findOne({
         _id: sprintId,
@@ -478,11 +713,17 @@ export const editSprint = async (req, res) => {
             success: false
         })
     }
-    // await Sprint.findByIdAndDelete(sprintId)
-    sprint.name = name
-    sprint.startDate = startDate
-    sprint.endDate = endDate
-    sprint.save()
+    if (name) sprint.name = name
+    if (startDate) sprint.startDate = startDate
+    if (endDate) sprint.endDate = endDate
+
+    if (!sprint.project_id) {
+        const defaultProject = await ensureDefaultProjectForOrg(orgId);
+        await backfillProjectIdsForOrg(orgId, defaultProject._id);
+        sprint.project_id = defaultProject._id;
+    }
+
+    await sprint.save()
     res.status(200).json({
         message: "Sprint edited successfully",
         success: true
@@ -511,9 +752,20 @@ export const orgTeamCreate = async (req, res) => {
             success: false
         })
     }
+
+    const requestedProjectId = req.params.projectId || req.body.projectId;
+    const defaultProject = await ensureDefaultProjectForOrg(orgId);
+    await backfillProjectIdsForOrg(orgId, defaultProject._id);
+    const projectIdToUse = requestedProjectId || defaultProject._id.toString();
+    const project = await Project.findOne({ _id: projectIdToUse, organization_id: orgId });
+    if (!project) {
+        return res.status(404).json({ message: "Project not found", success: false });
+    }
+
     const newTeam = new Team({
         name: name,
-        organization_id: orgId
+        organization_id: orgId,
+        project_id: projectIdToUse,
     })
     // for(const member of members){
     //     newTeam.members.push({
@@ -545,9 +797,11 @@ export const orgTeamDelete = async (req, res) => {
             success: false
         })
     }
+    const projectFilter = req.params.projectId ? { project_id: req.params.projectId } : {};
     const team = await Team.findOneAndDelete({
         _id: teamId,
-        organization_id: orgId
+        organization_id: orgId,
+        ...projectFilter,
     })
     if (!team) {
         return res.status(404).json({
@@ -555,6 +809,7 @@ export const orgTeamDelete = async (req, res) => {
             success: false
         })
     }
+    await Task.deleteMany({ team_id: teamId, organization_id: orgId });
     // for(const member of members){
     //     newTeam.members.push({
     //         user:member.user,
@@ -701,7 +956,12 @@ export const orgTeamFetchAll = async (req, res) => {
             success: false
         })
     }
-    const teams = await Team.find({ organization_id: orgId }).populate('members.user', '-password')
+    const requestedProjectId = req.params.projectId || req.query?.projectId;
+    const defaultProject = await ensureDefaultProjectForOrg(orgId);
+    await backfillProjectIdsForOrg(orgId, defaultProject._id);
+    const projectIdToUse = requestedProjectId || defaultProject._id.toString();
+
+    const teams = await Team.find({ organization_id: orgId, project_id: projectIdToUse }).populate('members.user', '-password')
     res.status(200).json({
         message: "Teams fetched successfully",
         success: true,
@@ -724,7 +984,9 @@ export const orgTeamFetchOne = async (req, res) => {
             success: false
         })
     }
-    const team = await Team.findOne({ _id: teamId, organization_id: orgId }).populate('members.user', '-password')
+    const requestedProjectId = req.params.projectId || req.query?.projectId;
+    const projectFilter = requestedProjectId ? { project_id: requestedProjectId } : {};
+    const team = await Team.findOne({ _id: teamId, organization_id: orgId, ...projectFilter }).populate('members.user', '-password')
     if (!team) {
         return res.status(404).json({
             message: "Team not found",
@@ -761,6 +1023,12 @@ export const orgAddTaskToTeamInSprint = async (req, res) => {
             success: false
         })
     }
+    if (!sprint.project_id) {
+        const defaultProject = await ensureDefaultProjectForOrg(orgId);
+        await backfillProjectIdsForOrg(orgId, defaultProject._id);
+        sprint.project_id = defaultProject._id;
+        await sprint.save();
+    }
     const teamObj = await Team.findOne({
         _id: team,
         organization_id: orgId
@@ -770,6 +1038,12 @@ export const orgAddTaskToTeamInSprint = async (req, res) => {
             message: "Team not found",
             success: false
         })
+    }
+    if (teamObj.project_id?.toString() !== sprint.project_id?.toString()) {
+        return res.status(400).json({
+            message: "Team does not belong to this project",
+            success: false,
+        });
     }
     for (const member of members) {
         const isMemberInTeam = teamObj.members.some(mem => mem.user._id.toString() === member)
@@ -789,6 +1063,7 @@ export const orgAddTaskToTeamInSprint = async (req, res) => {
         endDate,
         sprint_id: sprintId,
         team_id: team,
+        project_id: sprint.project_id,
         organization_id: orgId
     })
     for (const member of members) {
@@ -865,6 +1140,12 @@ export const orgEditTaskToTeamInSprint = async (req, res) => {
             success: false
         })
     }
+    if (!sprint.project_id) {
+        const defaultProject = await ensureDefaultProjectForOrg(orgId);
+        await backfillProjectIdsForOrg(orgId, defaultProject._id);
+        sprint.project_id = defaultProject._id;
+        await sprint.save();
+    }
     const teamObj = await Team.findOne({
         _id: team,
         organization_id: orgId
@@ -874,6 +1155,12 @@ export const orgEditTaskToTeamInSprint = async (req, res) => {
             message: "Team not found",
             success: false
         })
+    }
+    if (teamObj.project_id?.toString() !== sprint.project_id?.toString()) {
+        return res.status(400).json({
+            message: "Team does not belong to this project",
+            success: false,
+        });
     }
     for (const member of members) {
         const isMemberInTeam = teamObj.members.some(mem => mem.user._id.toString() === member)
@@ -906,6 +1193,7 @@ export const orgEditTaskToTeamInSprint = async (req, res) => {
     for (const member of members) {
         task.assignee.push(member)
     }
+    task.project_id = sprint.project_id;
     await task.save()
     res.status(201).json({
         message: "Task edited successfully",
@@ -937,6 +1225,12 @@ export const orgDeleteTaskFromTeamInSprint = async (req, res) => {
             success: false
         })
     }
+    if (!sprint.project_id) {
+        const defaultProject = await ensureDefaultProjectForOrg(orgId);
+        await backfillProjectIdsForOrg(orgId, defaultProject._id);
+        sprint.project_id = defaultProject._id;
+        await sprint.save();
+    }
     const teamObj = await Team.findOne({
         _id: teamId,
         organization_id: orgId
@@ -946,6 +1240,12 @@ export const orgDeleteTaskFromTeamInSprint = async (req, res) => {
             message: "Team not found",
             success: false
         })
+    }
+    if (teamObj.project_id?.toString() !== sprint.project_id?.toString()) {
+        return res.status(400).json({
+            message: "Team does not belong to this project",
+            success: false,
+        });
     }
     const actionValid = teamObj.members.some(mem => mem.user._id.toString() === req.user._id && (mem.role === 'admin' || mem.role === 'editor')) || org.owner_id.toString() === req.user._id
     if (!actionValid) {

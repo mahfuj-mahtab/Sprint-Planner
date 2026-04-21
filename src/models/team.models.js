@@ -7,6 +7,11 @@ const teamSchema = new mongoose.Schema({
         required: true,
         trim: true,
     },
+    project_id: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Project',
+        index: true,
+    },
     members: [{
         user: {
             type: mongoose.Schema.Types.ObjectId,
@@ -23,6 +28,7 @@ const teamSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Organization',
         required: true,
+        index: true,
     },
 }, { timestamps: true });
 

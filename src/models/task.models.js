@@ -34,15 +34,23 @@ const taskSchema = new mongoose.Schema({
     sprint_id: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Sprint',
+        index: true,
     },
     team_id: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Team',
+        index: true,
+    },
+    project_id: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Project',
+        index: true,
     },
     organization_id: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Organization',
         required: true,
+        index: true,
     },
 }, { timestamps: true });
 
