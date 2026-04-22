@@ -55,7 +55,7 @@ userSchema.methods.generateAccessToken = function () {
         role: this.role,
     };
     
-    return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '2m' });
+    return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
 };
 
 userSchema.methods.generateRefreshToken = function () {

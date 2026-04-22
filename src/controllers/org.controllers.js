@@ -34,24 +34,29 @@ const backfillProjectIdsForOrg = async (orgId, projectId) => {
 };
 export const orgCreate = async (req, res) => {
     const { name, description } = req.body;
-    // console.log(req.user.id)
-    const owner_id = req.user._id
+    const owner_id = req.user._id;
+
     if (!name || !description) {
         return res.status(400).json({ message: "Name and description are required", success: false });
     }
+
     try {
-        const newOrg = new Organization({ name, description, owner_id });
+        const newOrg = new Organization({ 
+            name, 
+            description, 
+            owner_id,
+            members: [{ user: owner_id, status: 'active' }]  // ✅ owner auto-added
+        });
         await newOrg.save();
+
         res.status(201).json({
             message: "Organization created successfully",
             success: true,
             organization: newOrg,
-
         });
     } catch (error) {
         res.status(500).json({ message: "Error creating organization", error, success: false });
-    };
-
+    }
 }
 
 export const orgEdit = async (req, res) => {

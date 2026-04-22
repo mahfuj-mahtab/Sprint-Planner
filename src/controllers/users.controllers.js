@@ -90,7 +90,15 @@ export const userRegister = async (req, res) => {
 export const userProfile = async (req, res) => {
     const user = req.user;
     const userDetails = await User.findById(user._id).select('-password');
-    const orgDetails = await Organization.find({ owner_id: user._id }).populate('members.user', '-password');
+
+    // Fetch orgs where user is owner OR a member
+    const orgDetails = await Organization.find({
+        $or: [
+            { owner_id: user._id },
+            { 'members.user': user._id }
+        ]
+    }).populate('members.user', '-password');
+
     res.status(200).send({
         message: "User profile fetched successfully",
         success: true,
