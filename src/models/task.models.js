@@ -52,6 +52,12 @@ const taskSchema = new mongoose.Schema({
         required: true,
         index: true,
     },
+    feature_id: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Feature',
+        index: true,
+        default: null,
+    },
 }, { timestamps: true });
 
 const Task = mongoose.model('Task', taskSchema);

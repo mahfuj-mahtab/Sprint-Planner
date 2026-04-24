@@ -1,6 +1,6 @@
 import { Router } from "express";
 // import User from "../models/users.models.js";
-import { userLogin, userLogout, userProfile, userProfileEdit, userRegister } from "../controllers/users.controllers.js";
+import { userAssignedTasks, userLogin, userLogout, userProfile, userProfileEdit, userRegister } from "../controllers/users.controllers.js";
 import { addTeamToOrg, orgCreate, orgDelete, orgEdit, orgFetchAllMembers, orgMemberAdd, orgMemberRemove } from "../controllers/org.controllers.js";
 import { authenticateToken } from "../middlewares/auth.middleware.js";
 const router = Router();
@@ -12,6 +12,7 @@ router.post("/logout",authenticateToken, userLogout);
 
 router.post("/register", userRegister);
 router.get("/profile/", authenticateToken, userProfile);
+router.get("/tasks/assigned", authenticateToken, userAssignedTasks);
 router.patch("/profile/edit/", authenticateToken, userProfileEdit);
 router.post("/org/create/", authenticateToken, orgCreate);
 router.patch("/org/edit/:orgId", authenticateToken, orgEdit);

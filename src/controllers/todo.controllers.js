@@ -13,9 +13,37 @@ const getDayBoundaries = (date) => {
     return { start, end };
 };
 
+// Get start/end boundaries for a user's local day, expressed as UTC Date objects.
+// tzOffset is minutes ahead of UTC (e.g. Dhaka UTC+6 → 360).
+const getUtcDayBoundariesForLocalDay = ({ tzOffset, localY, localM, localD }) => {
+    const offsetMs = (parseInt(tzOffset, 10) || 0) * 60000;
+    const startUtc = new Date(Date.UTC(localY, localM, localD, 0, 0, 0, 0) - offsetMs);
+    const endUtc = new Date(Date.UTC(localY, localM, localD, 23, 59, 59, 999) - offsetMs);
+    return { start: startUtc, end: endUtc };
+};
+
+const getUtcDayBoundariesFromTzOffsetNow = (tzOffset) => {
+    const offsetMs = (parseInt(tzOffset, 10) || 0) * 60000;
+    const pseudoLocalNow = new Date(Date.now() + offsetMs);
+    return getUtcDayBoundariesForLocalDay({
+        tzOffset,
+        localY: pseudoLocalNow.getUTCFullYear(),
+        localM: pseudoLocalNow.getUTCMonth(),
+        localD: pseudoLocalNow.getUTCDate(),
+    });
+};
+
+const parseLocalDateYMD = (dateStr) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr || "");
+    if (!m) return null;
+    return { y: Number(m[1]), m: Number(m[2]) - 1, d: Number(m[3]) };
+};
+
 // Helper function to calculate total hours used for a specific day
-const calculateDayHours = async (userId, targetDate) => {
-    const { start, end } = getDayBoundaries(targetDate);
+const calculateDayHours = async (userId, targetDateOrBoundaries) => {
+    const { start, end } = targetDateOrBoundaries?.start && targetDateOrBoundaries?.end
+        ? targetDateOrBoundaries
+        : getDayBoundaries(targetDateOrBoundaries);
 
     const todos = await Todo.find({
         userId,
@@ -108,15 +136,15 @@ export const createTodo = async (req, res) => {
 export const getTodayTodos = async (req, res) => {
     try {
         const userId = req.user._id;
-        const today = new Date();
-        const { start, end } = getDayBoundaries(today);
+        const tzOffset = parseInt(req.query.tzOffset) || 0;
+        const { start, end } = getUtcDayBoundariesFromTzOffsetNow(tzOffset);
 
         const todos = await Todo.find({
             userId,
             startDateTime: { $gte: start, $lte: end }
         }).sort({ isOverdue: -1, endDateTime: 1 });
 
-        const analysis = await calculateDayHours(userId, today);
+        const analysis = await calculateDayHours(userId, { start, end });
 
         res.status(200).json({
             success: true,
@@ -138,7 +166,7 @@ export const getTodayTodos = async (req, res) => {
 export const getTodosByDate = async (req, res) => {
     try {
         const userId = req.user._id;
-        const { date } = req.query;
+        const { date, tzOffset } = req.query;
 
         if (!date) {
             return res.status(400).json({
@@ -147,15 +175,23 @@ export const getTodosByDate = async (req, res) => {
             });
         }
 
-        const targetDate = new Date(date);
-        const { start, end } = getDayBoundaries(targetDate);
+        const ymd = parseLocalDateYMD(date);
+        if (!ymd) {
+            return res.status(400).json({ success: false, message: "Invalid date format (expected YYYY-MM-DD)" });
+        }
+        const { start, end } = getUtcDayBoundariesForLocalDay({
+            tzOffset: parseInt(tzOffset) || 0,
+            localY: ymd.y,
+            localM: ymd.m,
+            localD: ymd.d
+        });
 
         const todos = await Todo.find({
             userId,
             startDateTime: { $gte: start, $lte: end }
         }).sort({ isOverdue: -1, endDateTime: 1 });
 
-        const analysis = await calculateDayHours(userId, targetDate);
+        const analysis = await calculateDayHours(userId, { start, end });
 
         res.status(200).json({
             success: true,
@@ -177,25 +213,12 @@ export const getTodosByDate = async (req, res) => {
 export const getOverdueTodos = async (req, res) => {
     try {
         const userId = req.user._id;
-    
-
-        // Accept client-supplied UTC offset (minutes) so "now" matches user's local time.
-
-            // e.g. Dhaka = UTC+6 → client sends tzOffset=360
-
-            const tzOffset = parseInt(req.query.tzOffset) || 0; // minutes
-
-         const now = new Date(Date.now() - tzOffset * 60000);
-
+        const now = new Date();
 
         const todos = await Todo.find({
-
             userId,
-
             endDateTime: { $lt: now },
-
-            status: { $ne: 'completed', $ne: 'cancelled' }
-
+            status: { $nin: ['completed', 'cancelled'] }
         }).sort({ endDateTime: 1 });
 
         res.status(200).json({
@@ -289,10 +312,22 @@ export const deleteTodo = async (req, res) => {
 export const getDayAnalysis = async (req, res) => {
     try {
         const userId = req.user._id;
-        const { date } = req.query;
+        const { date, tzOffset } = req.query;
+        const offset = parseInt(tzOffset) || 0;
 
-        const targetDate = date ? new Date(date) : new Date();
-        const analysis = await calculateDayHours(userId, targetDate);
+        const boundaries = date
+            ? (() => {
+                const ymd = parseLocalDateYMD(date);
+                if (!ymd) return null;
+                return getUtcDayBoundariesForLocalDay({ tzOffset: offset, localY: ymd.y, localM: ymd.m, localD: ymd.d });
+            })()
+            : getUtcDayBoundariesFromTzOffsetNow(offset);
+
+        if (!boundaries) {
+            return res.status(400).json({ success: false, message: "Invalid date format (expected YYYY-MM-DD)" });
+        }
+
+        const analysis = await calculateDayHours(userId, boundaries);
 
         res.status(200).json({
             success: true,

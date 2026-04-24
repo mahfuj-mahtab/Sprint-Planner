@@ -3,6 +3,9 @@ import Project from "../models/project.models.js";
 import Team from "../models/team.models.js";
 import Sprint from "../models/sprint.models.js";
 import Task from "../models/task.models.js";
+import FeatureModule from "../models/featureModule.models.js";
+import Feature from "../models/feature.models.js";
+import ProjectVersion from "../models/projectVersion.models.js";
 import User from "../models/users.models.js";
 import Platform, { PlatformStatus } from "../models/platform.models.js";
 import Post from "../models/post.models.js";
@@ -31,6 +34,38 @@ const backfillProjectIdsForOrg = async (orgId, projectId) => {
             { $set: { project_id: projectId } }
         ),
     ]);
+};
+
+const assertOrgOwner = (org, userId) => {
+    if (org.owner_id.toString() !== userId) {
+        const err = new Error("FORBIDDEN");
+        err.status = 403;
+        throw err;
+    }
+};
+
+const computeFeatureStatus = ({ totalTasks, completedTasks }) => {
+    if (!totalTasks) return "pending";
+    if (completedTasks >= totalTasks) return "completed";
+    if (completedTasks > 0) return "in-progress";
+    return "pending";
+};
+
+const computeModuleStatus = (features) => {
+    if (!features || features.length === 0) return "pending";
+    const completed = features.filter(f => f.status === "completed").length;
+    if (completed === features.length) return "completed";
+    if (completed > 0) return "in-progress";
+    return "pending";
+};
+
+const normalizeIdSet = (ids) => {
+    const set = new Set();
+    for (const id of ids || []) {
+        if (!id) continue;
+        set.add(id.toString());
+    }
+    return set;
 };
 export const orgCreate = async (req, res) => {
     const { name, description } = req.body;
@@ -290,7 +325,7 @@ export const orgProjectList = async (req, res) => {
 
 export const orgProjectCreate = async (req, res) => {
     const { orgId } = req.params;
-    const { name, description } = req.body;
+    const { name, description, documentation } = req.body;
 
     if (!name) {
         return res.status(400).json({ message: "Project name is required", success: false });
@@ -308,6 +343,7 @@ export const orgProjectCreate = async (req, res) => {
         const project = new Project({
             name: name.trim(),
             description: (description || "").trim(),
+            documentation: (documentation || "").trim(),
             organization_id: orgId,
         });
         await project.save();
@@ -325,9 +361,9 @@ export const orgProjectCreate = async (req, res) => {
 
 export const orgProjectEdit = async (req, res) => {
     const { orgId, projectId } = req.params;
-    const { name, description, isArchived } = req.body;
+    const { name, description, documentation, isArchived } = req.body;
 
-    if (!name && !description && typeof isArchived !== "boolean") {
+    if (!name && !description && typeof documentation !== "string" && typeof isArchived !== "boolean") {
         return res.status(400).json({ message: "Nothing to update", success: false });
     }
 
@@ -347,6 +383,7 @@ export const orgProjectEdit = async (req, res) => {
 
         if (name) project.name = name.trim();
         if (typeof description === "string") project.description = description.trim();
+        if (typeof documentation === "string") project.documentation = documentation.trim();
         if (typeof isArchived === "boolean") project.isArchived = isArchived;
 
         await project.save();
@@ -431,6 +468,443 @@ export const orgProjectDetails = async (req, res) => {
         });
     } catch (error) {
         return res.status(500).json({ message: "Error retrieving project details", error, success: false });
+    }
+};
+
+export const orgFeatureAnalysisSummary = async (req, res) => {
+    const { orgId, projectId } = req.params;
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) return res.status(404).json({ message: "Organization not found", success: false });
+        assertOrgOwner(org, req.user._id);
+
+        const project = await Project.findOne({ _id: projectId, organization_id: orgId });
+        if (!project) return res.status(404).json({ message: "Project not found", success: false });
+
+        const modules = await FeatureModule.find({ organization_id: orgId, project_id: projectId }).sort({ createdAt: 1 });
+        const features = await Feature.find({ organization_id: orgId, project_id: projectId }).sort({ createdAt: 1 });
+
+        const tasks = await Task.find(
+            { organization_id: orgId, project_id: projectId, feature_id: { $ne: null } },
+            { feature_id: 1, status: 1 }
+        ).lean();
+
+        const taskCountsByFeature = new Map();
+        for (const t of tasks) {
+            const key = t.feature_id?.toString();
+            if (!key) continue;
+            const prev = taskCountsByFeature.get(key) || { totalTasks: 0, completedTasks: 0 };
+            prev.totalTasks += 1;
+            if (t.status === "Completed") prev.completedTasks += 1;
+            taskCountsByFeature.set(key, prev);
+        }
+
+        const featuresByModule = new Map();
+        for (const f of features) {
+            const key = f.module_id.toString();
+            const counts = taskCountsByFeature.get(f._id.toString()) || { totalTasks: 0, completedTasks: 0 };
+            const featureView = {
+                _id: f._id,
+                name: f.name,
+                module_id: f.module_id,
+                totalTasks: counts.totalTasks,
+                completedTasks: counts.completedTasks,
+                status: computeFeatureStatus(counts),
+            };
+            const arr = featuresByModule.get(key) || [];
+            arr.push(featureView);
+            featuresByModule.set(key, arr);
+        }
+
+        const moduleViews = modules.map((m) => {
+            const moduleFeatures = featuresByModule.get(m._id.toString()) || [];
+            const completedFeatures = moduleFeatures.filter(f => f.status === "completed").length;
+            return {
+                _id: m._id,
+                name: m.name,
+                project_id: m.project_id,
+                organization_id: m.organization_id,
+                totalFeatures: moduleFeatures.length,
+                completedFeatures,
+                status: computeModuleStatus(moduleFeatures),
+                features: moduleFeatures,
+            };
+        });
+
+        return res.status(200).json({
+            message: "Feature analysis retrieved successfully",
+            success: true,
+            project,
+            modules: moduleViews,
+        });
+    } catch (error) {
+        if (error?.message === "FORBIDDEN") return res.status(403).json({ message: "You do not have permission", success: false });
+        return res.status(500).json({ message: "Error retrieving feature analysis", error, success: false });
+    }
+};
+
+export const orgFeatureModuleCreate = async (req, res) => {
+    const { orgId, projectId } = req.params;
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ message: "Module name is required", success: false });
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) return res.status(404).json({ message: "Organization not found", success: false });
+        assertOrgOwner(org, req.user._id);
+
+        const project = await Project.findOne({ _id: projectId, organization_id: orgId });
+        if (!project) return res.status(404).json({ message: "Project not found", success: false });
+
+        const mod = new FeatureModule({ name: name.trim(), organization_id: orgId, project_id: projectId });
+        await mod.save();
+        return res.status(201).json({ message: "Module created successfully", success: true, module: mod });
+    } catch (error) {
+        const isDuplicate = error?.code === 11000;
+        return res.status(isDuplicate ? 409 : 500).json({
+            message: isDuplicate ? "A module with this name already exists" : "Error creating module",
+            error,
+            success: false,
+        });
+    }
+};
+
+export const orgFeatureModuleEdit = async (req, res) => {
+    const { orgId, projectId, moduleId } = req.params;
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ message: "Module name is required", success: false });
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) return res.status(404).json({ message: "Organization not found", success: false });
+        assertOrgOwner(org, req.user._id);
+
+        const mod = await FeatureModule.findOne({ _id: moduleId, organization_id: orgId, project_id: projectId });
+        if (!mod) return res.status(404).json({ message: "Module not found", success: false });
+        mod.name = name.trim();
+        await mod.save();
+        return res.status(200).json({ message: "Module updated successfully", success: true, module: mod });
+    } catch (error) {
+        const isDuplicate = error?.code === 11000;
+        return res.status(isDuplicate ? 409 : 500).json({
+            message: isDuplicate ? "A module with this name already exists" : "Error updating module",
+            error,
+            success: false,
+        });
+    }
+};
+
+export const orgFeatureModuleDelete = async (req, res) => {
+    const { orgId, projectId, moduleId } = req.params;
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) return res.status(404).json({ message: "Organization not found", success: false });
+        assertOrgOwner(org, req.user._id);
+
+        const mod = await FeatureModule.findOne({ _id: moduleId, organization_id: orgId, project_id: projectId });
+        if (!mod) return res.status(404).json({ message: "Module not found", success: false });
+
+        const features = await Feature.find({ organization_id: orgId, project_id: projectId, module_id: moduleId }, { _id: 1 });
+        const featureIds = features.map(f => f._id);
+
+        await Promise.all([
+            Task.updateMany({ organization_id: orgId, project_id: projectId, feature_id: { $in: featureIds } }, { $set: { feature_id: null } }),
+            Feature.deleteMany({ organization_id: orgId, project_id: projectId, module_id: moduleId }),
+        ]);
+        await mod.deleteOne();
+
+        return res.status(200).json({ message: "Module deleted successfully", success: true });
+    } catch (error) {
+        if (error?.message === "FORBIDDEN") return res.status(403).json({ message: "You do not have permission", success: false });
+        return res.status(500).json({ message: "Error deleting module", error, success: false });
+    }
+};
+
+export const orgFeatureCreate = async (req, res) => {
+    const { orgId, projectId, moduleId } = req.params;
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ message: "Feature name is required", success: false });
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) return res.status(404).json({ message: "Organization not found", success: false });
+        assertOrgOwner(org, req.user._id);
+
+        const mod = await FeatureModule.findOne({ _id: moduleId, organization_id: orgId, project_id: projectId });
+        if (!mod) return res.status(404).json({ message: "Module not found", success: false });
+
+        const feat = new Feature({
+            name: name.trim(),
+            organization_id: orgId,
+            project_id: projectId,
+            module_id: moduleId,
+        });
+        await feat.save();
+        return res.status(201).json({ message: "Feature created successfully", success: true, feature: feat });
+    } catch (error) {
+        const isDuplicate = error?.code === 11000;
+        return res.status(isDuplicate ? 409 : 500).json({
+            message: isDuplicate ? "A feature with this name already exists in this module" : "Error creating feature",
+            error,
+            success: false,
+        });
+    }
+};
+
+export const orgFeatureEdit = async (req, res) => {
+    const { orgId, projectId, featureId } = req.params;
+    const { name, moduleId } = req.body;
+    if (!name && !moduleId) return res.status(400).json({ message: "Nothing to update", success: false });
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) return res.status(404).json({ message: "Organization not found", success: false });
+        assertOrgOwner(org, req.user._id);
+
+        const feat = await Feature.findOne({ _id: featureId, organization_id: orgId, project_id: projectId });
+        if (!feat) return res.status(404).json({ message: "Feature not found", success: false });
+
+        if (moduleId) {
+            const mod = await FeatureModule.findOne({ _id: moduleId, organization_id: orgId, project_id: projectId });
+            if (!mod) return res.status(404).json({ message: "Module not found", success: false });
+            feat.module_id = moduleId;
+        }
+        if (name) feat.name = name.trim();
+
+        await feat.save();
+        return res.status(200).json({ message: "Feature updated successfully", success: true, feature: feat });
+    } catch (error) {
+        const isDuplicate = error?.code === 11000;
+        return res.status(isDuplicate ? 409 : 500).json({
+            message: isDuplicate ? "A feature with this name already exists in this module" : "Error updating feature",
+            error,
+            success: false,
+        });
+    }
+};
+
+export const orgFeatureDelete = async (req, res) => {
+    const { orgId, projectId, featureId } = req.params;
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) return res.status(404).json({ message: "Organization not found", success: false });
+        assertOrgOwner(org, req.user._id);
+
+        const feat = await Feature.findOne({ _id: featureId, organization_id: orgId, project_id: projectId });
+        if (!feat) return res.status(404).json({ message: "Feature not found", success: false });
+
+        await Promise.all([
+            Task.updateMany({ organization_id: orgId, project_id: projectId, feature_id: featureId }, { $set: { feature_id: null } }),
+            feat.deleteOne(),
+        ]);
+
+        return res.status(200).json({ message: "Feature deleted successfully", success: true });
+    } catch (error) {
+        if (error?.message === "FORBIDDEN") return res.status(403).json({ message: "You do not have permission", success: false });
+        return res.status(500).json({ message: "Error deleting feature", error, success: false });
+    }
+};
+
+export const orgProjectVersionList = async (req, res) => {
+    const { orgId, projectId } = req.params;
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) return res.status(404).json({ message: "Organization not found", success: false });
+        assertOrgOwner(org, req.user._id);
+
+        const project = await Project.findOne({ _id: projectId, organization_id: orgId });
+        if (!project) return res.status(404).json({ message: "Project not found", success: false });
+
+        const versions = await ProjectVersion.find({ organization_id: orgId, project_id: projectId })
+            .sort({ createdAt: -1 })
+            .lean();
+
+        return res.status(200).json({ message: "Versions fetched successfully", success: true, versions });
+    } catch (error) {
+        if (error?.message === "FORBIDDEN") return res.status(403).json({ message: "You do not have permission", success: false });
+        return res.status(500).json({ message: "Error fetching versions", error, success: false });
+    }
+};
+
+export const orgProjectVersionCreate = async (req, res) => {
+    const { orgId, projectId } = req.params;
+    const { name, description } = req.body;
+    if (!name) return res.status(400).json({ message: "Version name is required", success: false });
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) return res.status(404).json({ message: "Organization not found", success: false });
+        assertOrgOwner(org, req.user._id);
+
+        const project = await Project.findOne({ _id: projectId, organization_id: orgId });
+        if (!project) return res.status(404).json({ message: "Project not found", success: false });
+
+        const version = new ProjectVersion({
+            name: name.trim(),
+            description: (description || "").trim(),
+            organization_id: orgId,
+            project_id: projectId,
+            feature_ids: [],
+        });
+        await version.save();
+
+        return res.status(201).json({ message: "Version created successfully", success: true, version });
+    } catch (error) {
+        const isDuplicate = error?.code === 11000;
+        return res.status(isDuplicate ? 409 : 500).json({
+            message: isDuplicate ? "A version with this name already exists" : "Error creating version",
+            error,
+            success: false,
+        });
+    }
+};
+
+export const orgProjectVersionDelete = async (req, res) => {
+    const { orgId, projectId, versionId } = req.params;
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) return res.status(404).json({ message: "Organization not found", success: false });
+        assertOrgOwner(org, req.user._id);
+
+        const version = await ProjectVersion.findOne({ _id: versionId, organization_id: orgId, project_id: projectId });
+        if (!version) return res.status(404).json({ message: "Version not found", success: false });
+
+        await version.deleteOne();
+        return res.status(200).json({ message: "Version deleted successfully", success: true });
+    } catch (error) {
+        if (error?.message === "FORBIDDEN") return res.status(403).json({ message: "You do not have permission", success: false });
+        return res.status(500).json({ message: "Error deleting version", error, success: false });
+    }
+};
+
+export const orgProjectVersionAssignFeature = async (req, res) => {
+    const { orgId, projectId, versionId } = req.params;
+    const { featureId } = req.body;
+    if (!featureId) return res.status(400).json({ message: "featureId is required", success: false });
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) return res.status(404).json({ message: "Organization not found", success: false });
+        assertOrgOwner(org, req.user._id);
+
+        const version = await ProjectVersion.findOne({ _id: versionId, organization_id: orgId, project_id: projectId });
+        if (!version) return res.status(404).json({ message: "Version not found", success: false });
+
+        const feature = await Feature.findOne({ _id: featureId, organization_id: orgId, project_id: projectId });
+        if (!feature) return res.status(400).json({ message: "Invalid feature for this project", success: false });
+
+        const existing = normalizeIdSet(version.feature_ids);
+        if (existing.has(featureId.toString())) {
+            return res.status(200).json({ message: "Feature already assigned", success: true, version });
+        }
+
+        version.feature_ids.push(feature._id);
+        await version.save();
+
+        return res.status(200).json({ message: "Feature assigned to version", success: true });
+    } catch (error) {
+        if (error?.message === "FORBIDDEN") return res.status(403).json({ message: "You do not have permission", success: false });
+        return res.status(500).json({ message: "Error assigning feature", error, success: false });
+    }
+};
+
+export const orgProjectVersionRemoveFeature = async (req, res) => {
+    const { orgId, projectId, versionId, featureId } = req.params;
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) return res.status(404).json({ message: "Organization not found", success: false });
+        assertOrgOwner(org, req.user._id);
+
+        const version = await ProjectVersion.findOne({ _id: versionId, organization_id: orgId, project_id: projectId });
+        if (!version) return res.status(404).json({ message: "Version not found", success: false });
+
+        version.feature_ids = (version.feature_ids || []).filter((id) => id.toString() !== featureId.toString());
+        await version.save();
+
+        return res.status(200).json({ message: "Feature removed from version", success: true });
+    } catch (error) {
+        if (error?.message === "FORBIDDEN") return res.status(403).json({ message: "You do not have permission", success: false });
+        return res.status(500).json({ message: "Error removing feature", error, success: false });
+    }
+};
+
+export const orgProjectVersionDetails = async (req, res) => {
+    const { orgId, projectId, versionId } = req.params;
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) return res.status(404).json({ message: "Organization not found", success: false });
+        assertOrgOwner(org, req.user._id);
+
+        const project = await Project.findOne({ _id: projectId, organization_id: orgId });
+        if (!project) return res.status(404).json({ message: "Project not found", success: false });
+
+        const version = await ProjectVersion.findOne({ _id: versionId, organization_id: orgId, project_id: projectId }).lean();
+        if (!version) return res.status(404).json({ message: "Version not found", success: false });
+
+        const featureIds = (version.feature_ids || []).map((id) => id.toString());
+        if (featureIds.length === 0) {
+            return res.status(200).json({
+                message: "Version details retrieved successfully",
+                success: true,
+                project,
+                version,
+                modules: [],
+            });
+        }
+
+        const features = await Feature.find({ _id: { $in: featureIds }, organization_id: orgId, project_id: projectId }).sort({ createdAt: 1 });
+        const moduleIds = [...new Set(features.map((f) => f.module_id.toString()))];
+        const modules = await FeatureModule.find({ _id: { $in: moduleIds }, organization_id: orgId, project_id: projectId }).sort({ createdAt: 1 });
+
+        const tasks = await Task.find(
+            { organization_id: orgId, project_id: projectId, feature_id: { $in: featureIds } },
+            { feature_id: 1, status: 1 }
+        ).lean();
+
+        const taskCountsByFeature = new Map();
+        for (const t of tasks) {
+            const key = t.feature_id?.toString();
+            if (!key) continue;
+            const prev = taskCountsByFeature.get(key) || { totalTasks: 0, completedTasks: 0 };
+            prev.totalTasks += 1;
+            if (t.status === "Completed") prev.completedTasks += 1;
+            taskCountsByFeature.set(key, prev);
+        }
+
+        const featuresByModule = new Map();
+        for (const f of features) {
+            const key = f.module_id.toString();
+            const counts = taskCountsByFeature.get(f._id.toString()) || { totalTasks: 0, completedTasks: 0 };
+            const featureView = {
+                _id: f._id,
+                name: f.name,
+                module_id: f.module_id,
+                totalTasks: counts.totalTasks,
+                completedTasks: counts.completedTasks,
+                status: computeFeatureStatus(counts),
+            };
+            const arr = featuresByModule.get(key) || [];
+            arr.push(featureView);
+            featuresByModule.set(key, arr);
+        }
+
+        const moduleViews = modules.map((m) => {
+            const moduleFeatures = featuresByModule.get(m._id.toString()) || [];
+            const completedFeatures = moduleFeatures.filter(f => f.status === "completed").length;
+            return {
+                _id: m._id,
+                name: m.name,
+                totalFeatures: moduleFeatures.length,
+                completedFeatures,
+                status: computeModuleStatus(moduleFeatures),
+                features: moduleFeatures,
+            };
+        });
+
+        return res.status(200).json({
+            message: "Version details retrieved successfully",
+            success: true,
+            project,
+            version,
+            modules: moduleViews,
+        });
+    } catch (error) {
+        if (error?.message === "FORBIDDEN") return res.status(403).json({ message: "You do not have permission", success: false });
+        return res.status(500).json({ message: "Error retrieving version details", error, success: false });
     }
 };
 
@@ -1006,7 +1480,7 @@ export const orgTeamFetchOne = async (req, res) => {
 }
 export const orgAddTaskToTeamInSprint = async (req, res) => {
     const { orgId, sprintId } = req.params
-    const { team, name, description, status, priority, startDate, endDate, members } = req.body
+    const { team, name, description, status, priority, startDate, endDate, members, featureId } = req.body
     const org = await Organization.findById(orgId)
     if (!org) {
         return res.status(403).json({
@@ -1059,6 +1533,17 @@ export const orgAddTaskToTeamInSprint = async (req, res) => {
             })
         }
     }
+
+    let featureDoc = null;
+    if (featureId) {
+        featureDoc = await Feature.findOne({ _id: featureId, organization_id: orgId, project_id: sprint.project_id });
+        if (!featureDoc) {
+            return res.status(400).json({
+                message: "Invalid feature for this project",
+                success: false
+            });
+        }
+    }
     const newTask = new Task({
         title: name,
         description,
@@ -1069,7 +1554,8 @@ export const orgAddTaskToTeamInSprint = async (req, res) => {
         sprint_id: sprintId,
         team_id: team,
         project_id: sprint.project_id,
-        organization_id: orgId
+        organization_id: orgId,
+        feature_id: featureDoc?._id || null,
     })
     for (const member of members) {
         newTask.assignee.push(member)
@@ -1108,7 +1594,7 @@ export const orgShowSingleTaskInSprint = async (req, res) => {
         _id: taskId,
         sprint_id: sprintId,
         organization_id: orgId
-    }).populate('assignee', '-password').populate('team_id', '-organization_id')
+    }).populate('assignee', '-password').populate('team_id', '-organization_id').populate('feature_id')
     if (!task) {
         return res.status(404).json({
             message: "Task not found",
@@ -1123,7 +1609,7 @@ export const orgShowSingleTaskInSprint = async (req, res) => {
 }
 export const orgEditTaskToTeamInSprint = async (req, res) => {
     const { orgId, sprintId, taskId } = req.params
-    const { team, name, description, status, priority, startDate, endDate, members } = req.body
+    const { team, name, description, status, priority, startDate, endDate, members, featureId } = req.body
     const org = await Organization.findById(orgId)
     if (!org) {
         return res.status(403).json({
@@ -1199,6 +1685,17 @@ export const orgEditTaskToTeamInSprint = async (req, res) => {
         task.assignee.push(member)
     }
     task.project_id = sprint.project_id;
+
+    if (featureId === "" || featureId === null) {
+        task.feature_id = null;
+    } else if (typeof featureId === "string" && featureId) {
+        const featureDoc = await Feature.findOne({ _id: featureId, organization_id: orgId, project_id: sprint.project_id });
+        if (!featureDoc) {
+            return res.status(400).json({ message: "Invalid feature for this project", success: false });
+        }
+        task.feature_id = featureDoc._id;
+    }
+
     await task.save()
     res.status(201).json({
         message: "Task edited successfully",

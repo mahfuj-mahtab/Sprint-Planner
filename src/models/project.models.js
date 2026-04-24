@@ -12,6 +12,11 @@ const projectSchema = new mongoose.Schema(
       trim: true,
       default: "",
     },
+    documentation: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     organization_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Organization",
@@ -31,4 +36,3 @@ projectSchema.index({ organization_id: 1, name: 1 }, { unique: true });
 const Project = mongoose.model("Project", projectSchema);
 
 export default Project;
-

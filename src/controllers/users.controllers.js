@@ -1,5 +1,6 @@
 import Organization from "../models/organization.models.js";
 import User from "../models/users.models.js";
+import Task from "../models/task.models.js";
 export const userLogin = async (req, res) => {
 
     const { email, password } = req.body;
@@ -148,6 +149,33 @@ export const userLogout = async (req, res) => {
         return res.status(500).json({
             success: false,
             message: "Logout failed"
+        });
+    }
+};
+
+export const userAssignedTasks = async (req, res) => {
+    try {
+        const userId = req.user._id;
+
+        const tasks = await Task.find({ assignee: userId })
+            .sort({ endDate: 1, createdAt: -1 })
+            .populate("organization_id", "name")
+            .populate("project_id", "name")
+            .populate("sprint_id", "name startDate endDate project_id")
+            .populate("team_id", "name")
+            .populate("feature_id", "name module_id")
+            .lean();
+
+        return res.status(200).json({
+            message: "Assigned tasks fetched successfully",
+            success: true,
+            tasks,
+        });
+    } catch (error) {
+        return res.status(500).json({
+            message: "Error fetching assigned tasks",
+            success: false,
+            error,
         });
     }
 };

@@ -1,4 +1,4 @@
-import { addSprintToOrg, deleteSprint, editSprint, getSprintDetails, orgAddPlatformInSprint, orgAddPlatformPost, orgAddPlatformStatus, orgAddTaskToTeamInSprint, orgDelete, orgDeleteTaskFromTeamInSprint, orgEditTaskToTeamInSprint, orgGet, orgMemberAdd, orgMemberAddToTeam, orgMemberRemoveFromTeam, orgProjectCreate, orgProjectDelete, orgProjectDetails, orgProjectEdit, orgProjectList, orgShowPlatformDetails, orgShowSingleTaskInSprint, orgTeamCreate, orgTeamDelete, orgTeamFetchAll, orgTeamFetchOne } from "../controllers/org.controllers.js";
+import { addSprintToOrg, deleteSprint, editSprint, getSprintDetails, orgAddPlatformInSprint, orgAddPlatformPost, orgAddPlatformStatus, orgAddTaskToTeamInSprint, orgDelete, orgDeleteTaskFromTeamInSprint, orgEditTaskToTeamInSprint, orgFeatureAnalysisSummary, orgFeatureCreate, orgFeatureDelete, orgFeatureEdit, orgFeatureModuleCreate, orgFeatureModuleDelete, orgFeatureModuleEdit, orgGet, orgMemberAdd, orgMemberAddToTeam, orgMemberRemoveFromTeam, orgProjectCreate, orgProjectDelete, orgProjectDetails, orgProjectEdit, orgProjectList, orgProjectVersionAssignFeature, orgProjectVersionCreate, orgProjectVersionDelete, orgProjectVersionDetails, orgProjectVersionList, orgProjectVersionRemoveFeature, orgShowPlatformDetails, orgShowSingleTaskInSprint, orgTeamCreate, orgTeamDelete, orgTeamFetchAll, orgTeamFetchOne } from "../controllers/org.controllers.js";
 import { Router } from "express";
 import { authenticateToken } from "../middlewares/auth.middleware.js";
 
@@ -10,6 +10,23 @@ router.post("/:orgId/projects", authenticateToken, orgProjectCreate);
 router.get("/:orgId/projects/:projectId", authenticateToken, orgProjectDetails);
 router.patch("/:orgId/projects/:projectId", authenticateToken, orgProjectEdit);
 router.delete("/:orgId/projects/:projectId", authenticateToken, orgProjectDelete);
+
+// Feature analysis (modules + features per project)
+router.get("/:orgId/projects/:projectId/features/summary", authenticateToken, orgFeatureAnalysisSummary);
+router.post("/:orgId/projects/:projectId/feature-modules", authenticateToken, orgFeatureModuleCreate);
+router.patch("/:orgId/projects/:projectId/feature-modules/:moduleId", authenticateToken, orgFeatureModuleEdit);
+router.delete("/:orgId/projects/:projectId/feature-modules/:moduleId", authenticateToken, orgFeatureModuleDelete);
+router.post("/:orgId/projects/:projectId/feature-modules/:moduleId/features", authenticateToken, orgFeatureCreate);
+router.patch("/:orgId/projects/:projectId/features/:featureId", authenticateToken, orgFeatureEdit);
+router.delete("/:orgId/projects/:projectId/features/:featureId", authenticateToken, orgFeatureDelete);
+
+// Versions (feature assignments are read-only snapshots)
+router.get("/:orgId/projects/:projectId/versions", authenticateToken, orgProjectVersionList);
+router.post("/:orgId/projects/:projectId/versions", authenticateToken, orgProjectVersionCreate);
+router.get("/:orgId/projects/:projectId/versions/:versionId", authenticateToken, orgProjectVersionDetails);
+router.delete("/:orgId/projects/:projectId/versions/:versionId", authenticateToken, orgProjectVersionDelete);
+router.post("/:orgId/projects/:projectId/versions/:versionId/features", authenticateToken, orgProjectVersionAssignFeature);
+router.delete("/:orgId/projects/:projectId/versions/:versionId/features/:featureId", authenticateToken, orgProjectVersionRemoveFeature);
 
 router.post("/add/sprint/:orgId", authenticateToken, addSprintToOrg);
 router.post("/project/:projectId/add/sprint/:orgId", authenticateToken, addSprintToOrg);
