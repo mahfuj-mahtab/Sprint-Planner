@@ -5,6 +5,7 @@ import connectDB from './config/db.js';
 import 'dotenv/config';
 import userrRouter from './routes/users.routes.js';
 import orgRouter from './routes/org.routes.js';
+import todoRouter from './routes/todo.routes.js';
 const app = express();
 // dotenv.config();
 // Connect to database
@@ -35,6 +36,7 @@ app.use(cors({
 }));
 app.use('/api/v1/users', userrRouter);
 app.use('/api/v1/org', orgRouter);
+app.use('/api/v1/todo', todoRouter);
 // Sample route
 app.get('/', (req, res) => {
     res.send('Hello, World!');
