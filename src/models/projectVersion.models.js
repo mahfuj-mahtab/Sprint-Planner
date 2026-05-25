@@ -30,6 +30,15 @@ const projectVersionSchema = new mongoose.Schema(
         ref: "Feature",
       },
     ],
+    start_date: { type: Date, required: true },
+    end_date: { type: Date, required: true },
+    status: {
+      type: String,
+      enum: ["planned", "active", "completed"],
+      default: "planned",
+      index: true,
+    },
+    is_locked: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

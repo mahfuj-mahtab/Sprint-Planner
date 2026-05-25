@@ -23,6 +23,27 @@ const projectSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    client_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Client",
+      default: null,
+      index: true,
+    },
+    project_type: {
+      type: String,
+      enum: ["product", "client_work", "internal"],
+      default: "product",
+    },
+    status: {
+      type: String,
+      enum: ["active", "paused", "completed"],
+      default: "active",
+    },
+    budget: {
+      type: Number,
+      default: null,
+      min: 0,
+    },
     isArchived: {
       type: Boolean,
       default: false,

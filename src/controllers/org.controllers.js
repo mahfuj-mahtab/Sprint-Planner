@@ -6,6 +6,17 @@ import Task from "../models/task.models.js";
 import FeatureModule from "../models/featureModule.models.js";
 import Feature from "../models/feature.models.js";
 import ProjectVersion from "../models/projectVersion.models.js";
+import {
+    assertCanCreateVersion,
+    assertVersionDateOverlap,
+    assertVersionEditable,
+    assertVersionFeaturesMutable,
+    deriveVersionStatus,
+    findIncompleteVersions,
+    pickCurrentVersion,
+} from "../utils/versionRules.js";
+import { assertSprintNoOverlap } from "../utils/sprintRules.js";
+import { assertValidRange } from "../utils/dateRanges.js";
 import User from "../models/users.models.js";
 import Platform, { PlatformStatus } from "../models/platform.models.js";
 import Post from "../models/post.models.js";
@@ -21,6 +32,28 @@ const ensureDefaultProjectForOrg = async (orgId) => {
     });
     await created.save();
     return created;
+};
+
+const attachCurrentVersionToProjects = async (projects, orgId) => {
+    const allVersions = await ProjectVersion.find({ organization_id: orgId });
+    return projects.map((p) => {
+        const projectVersions = allVersions.filter((v) => v.project_id?.toString() === p._id.toString());
+        const current = pickCurrentVersion(projectVersions);
+        const obj = typeof p.toObject === "function" ? p.toObject() : { ...p };
+        return {
+            ...obj,
+            currentVersion: current
+                ? {
+                      _id: current._id,
+                      name: current.name,
+                      status: current.status,
+                      start_date: current.start_date,
+                      end_date: current.end_date,
+                      is_locked: current.is_locked,
+                  }
+                : null,
+        };
+    });
 };
 
 const backfillProjectIdsForOrg = async (orgId, projectId) => {
@@ -160,7 +193,8 @@ export const orgGet = async (req, res) => {
         const defaultProject = await ensureDefaultProjectForOrg(orgId);
         await backfillProjectIdsForOrg(orgId, defaultProject._id);
 
-        const projects = await Project.find({ organization_id: orgId }).sort({ createdAt: 1 });
+        const projectsRaw = await Project.find({ organization_id: orgId }).sort({ createdAt: 1 });
+        const projects = await attachCurrentVersionToProjects(projectsRaw, orgId);
         const requestedProjectId = req.query?.projectId;
         const selectedProjectId = requestedProjectId || defaultProject._id.toString();
 
@@ -317,7 +351,8 @@ export const orgProjectList = async (req, res) => {
         await backfillProjectIdsForOrg(orgId, defaultProject._id);
 
         const projects = await Project.find({ organization_id: orgId }).sort({ createdAt: 1 });
-        return res.status(200).json({ message: "Projects fetched successfully", success: true, projects });
+        const enriched = await attachCurrentVersionToProjects(projects, orgId);
+        return res.status(200).json({ message: "Projects fetched successfully", success: true, projects: enriched });
     } catch (error) {
         return res.status(500).json({ message: "Error fetching projects", error, success: false });
     }
@@ -325,7 +360,7 @@ export const orgProjectList = async (req, res) => {
 
 export const orgProjectCreate = async (req, res) => {
     const { orgId } = req.params;
-    const { name, description, documentation } = req.body;
+    const { name, description, documentation, client_id, project_type, status, budget } = req.body;
 
     if (!name) {
         return res.status(400).json({ message: "Project name is required", success: false });
@@ -345,6 +380,10 @@ export const orgProjectCreate = async (req, res) => {
             description: (description || "").trim(),
             documentation: (documentation || "").trim(),
             organization_id: orgId,
+            client_id: client_id || null,
+            project_type: project_type || "product",
+            status: status || "active",
+            budget: budget != null && budget !== "" ? Number(budget) : null,
         });
         await project.save();
 
@@ -361,9 +400,18 @@ export const orgProjectCreate = async (req, res) => {
 
 export const orgProjectEdit = async (req, res) => {
     const { orgId, projectId } = req.params;
-    const { name, description, documentation, isArchived } = req.body;
+    const { name, description, documentation, isArchived, client_id, project_type, status, budget } = req.body;
 
-    if (!name && !description && typeof documentation !== "string" && typeof isArchived !== "boolean") {
+    if (
+        !name &&
+        !description &&
+        typeof documentation !== "string" &&
+        typeof isArchived !== "boolean" &&
+        client_id === undefined &&
+        !project_type &&
+        !status &&
+        budget === undefined
+    ) {
         return res.status(400).json({ message: "Nothing to update", success: false });
     }
 
@@ -385,6 +433,10 @@ export const orgProjectEdit = async (req, res) => {
         if (typeof description === "string") project.description = description.trim();
         if (typeof documentation === "string") project.documentation = documentation.trim();
         if (typeof isArchived === "boolean") project.isArchived = isArchived;
+        if (client_id !== undefined) project.client_id = client_id || null;
+        if (project_type) project.project_type = project_type;
+        if (status) project.status = status;
+        if (budget !== undefined) project.budget = budget != null && budget !== "" ? Number(budget) : null;
 
         await project.save();
         return res.status(200).json({ message: "Project updated successfully", success: true, project });
@@ -712,10 +764,22 @@ export const orgProjectVersionList = async (req, res) => {
         if (!project) return res.status(404).json({ message: "Project not found", success: false });
 
         const versions = await ProjectVersion.find({ organization_id: orgId, project_id: projectId })
-            .sort({ createdAt: -1 })
+            .sort({ start_date: 1 })
             .lean();
 
-        return res.status(200).json({ message: "Versions fetched successfully", success: true, versions });
+        const incomplete = findIncompleteVersions(versions);
+        const current = pickCurrentVersion(versions);
+
+        return res.status(200).json({
+            message: "Versions fetched successfully",
+            success: true,
+            versions,
+            currentVersionId: current?._id || null,
+            canCreateVersion: incomplete.length === 0,
+            createBlockedReason: incomplete.length
+                ? `Complete "${incomplete[0].name}" before creating another version`
+                : null,
+        });
     } catch (error) {
         if (error?.message === "FORBIDDEN") return res.status(403).json({ message: "You do not have permission", success: false });
         return res.status(500).json({ message: "Error fetching versions", error, success: false });
@@ -724,8 +788,11 @@ export const orgProjectVersionList = async (req, res) => {
 
 export const orgProjectVersionCreate = async (req, res) => {
     const { orgId, projectId } = req.params;
-    const { name, description } = req.body;
+    const { name, description, start_date, end_date } = req.body;
     if (!name) return res.status(400).json({ message: "Version name is required", success: false });
+    if (!start_date || !end_date) {
+        return res.status(400).json({ message: "Start date and end date are required", success: false });
+    }
     try {
         const org = await Organization.findById(orgId);
         if (!org) return res.status(404).json({ message: "Organization not found", success: false });
@@ -734,21 +801,83 @@ export const orgProjectVersionCreate = async (req, res) => {
         const project = await Project.findOne({ _id: projectId, organization_id: orgId });
         if (!project) return res.status(404).json({ message: "Project not found", success: false });
 
+        await assertCanCreateVersion(orgId, projectId);
+        const { start, end } = await assertVersionDateOverlap(orgId, projectId, start_date, end_date);
+        const status = deriveVersionStatus(start, end);
+
         const version = new ProjectVersion({
             name: name.trim(),
             description: (description || "").trim(),
             organization_id: orgId,
             project_id: projectId,
             feature_ids: [],
+            start_date: start,
+            end_date: end,
+            status,
+            is_locked: false,
         });
         await version.save();
 
         return res.status(201).json({ message: "Version created successfully", success: true, version });
     } catch (error) {
         const isDuplicate = error?.code === 11000;
-        return res.status(isDuplicate ? 409 : 500).json({
-            message: isDuplicate ? "A version with this name already exists" : "Error creating version",
-            error,
+        const status = error.status || (isDuplicate ? 409 : 500);
+        return res.status(status).json({
+            message: isDuplicate ? "A version with this name already exists" : error.message || "Error creating version",
+            error: status === 500 ? error : undefined,
+            success: false,
+        });
+    }
+};
+
+export const orgProjectVersionUpdate = async (req, res) => {
+    const { orgId, projectId, versionId } = req.params;
+    const body = req.body;
+
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) return res.status(404).json({ message: "Organization not found", success: false });
+        assertOrgOwner(org, req.user._id);
+
+        const version = await ProjectVersion.findOne({ _id: versionId, organization_id: orgId, project_id: projectId });
+        if (!version) return res.status(404).json({ message: "Version not found", success: false });
+
+        if (body.complete === true) {
+            version.status = "completed";
+            await version.save();
+            return res.status(200).json({ message: "Version marked completed", success: true, version });
+        }
+
+        if (typeof body.is_locked === "boolean") {
+            version.is_locked = body.is_locked;
+            await version.save();
+            return res.status(200).json({
+                message: version.is_locked ? "Version locked" : "Version unlocked",
+                success: true,
+                version,
+            });
+        }
+
+        assertVersionEditable(version);
+
+        if (body.name) version.name = body.name.trim();
+        if (typeof body.description === "string") version.description = body.description.trim();
+
+        if (body.start_date || body.end_date) {
+            const start = body.start_date || version.start_date;
+            const end = body.end_date || version.end_date;
+            await assertVersionDateOverlap(orgId, projectId, start, end, versionId);
+            version.start_date = assertValidRange(start, end).start;
+            version.end_date = assertValidRange(start, end).end;
+            version.status = deriveVersionStatus(version.start_date, version.end_date);
+        }
+
+        await version.save();
+        return res.status(200).json({ message: "Version updated", success: true, version });
+    } catch (error) {
+        const status = error.status || 500;
+        return res.status(status).json({
+            message: error.message || "Error updating version",
             success: false,
         });
     }
@@ -763,6 +892,13 @@ export const orgProjectVersionDelete = async (req, res) => {
 
         const version = await ProjectVersion.findOne({ _id: versionId, organization_id: orgId, project_id: projectId });
         if (!version) return res.status(404).json({ message: "Version not found", success: false });
+
+        if (version.is_locked) {
+            return res.status(403).json({ message: "Unlock the version before deleting", success: false });
+        }
+        if (version.status === "active") {
+            return res.status(403).json({ message: "Complete or pause the active version before deleting", success: false });
+        }
 
         await version.deleteOne();
         return res.status(200).json({ message: "Version deleted successfully", success: true });
@@ -783,6 +919,12 @@ export const orgProjectVersionAssignFeature = async (req, res) => {
 
         const version = await ProjectVersion.findOne({ _id: versionId, organization_id: orgId, project_id: projectId });
         if (!version) return res.status(404).json({ message: "Version not found", success: false });
+
+        try {
+            assertVersionFeaturesMutable(version);
+        } catch (e) {
+            return res.status(e.status || 403).json({ message: e.message, success: false });
+        }
 
         const feature = await Feature.findOne({ _id: featureId, organization_id: orgId, project_id: projectId });
         if (!feature) return res.status(400).json({ message: "Invalid feature for this project", success: false });
@@ -811,6 +953,12 @@ export const orgProjectVersionRemoveFeature = async (req, res) => {
 
         const version = await ProjectVersion.findOne({ _id: versionId, organization_id: orgId, project_id: projectId });
         if (!version) return res.status(404).json({ message: "Version not found", success: false });
+
+        try {
+            assertVersionFeaturesMutable(version);
+        } catch (e) {
+            return res.status(e.status || 403).json({ message: e.message, success: false });
+        }
 
         version.feature_ids = (version.feature_ids || []).filter((id) => id.toString() !== featureId.toString());
         await version.save();
@@ -1087,6 +1235,12 @@ export const addSprintToOrg = async (req, res) => {
         return res.status(404).json({ message: "Project not found", success: false });
     }
 
+    try {
+        await assertSprintNoOverlap(orgId, projectIdToUse, startDate, endDate);
+    } catch (error) {
+        return res.status(error.status || 409).json({ message: error.message, success: false });
+    }
+
     const sprint = new Sprint({
         name: name,
         startDate: startDate,
@@ -1126,6 +1280,13 @@ export const editSprintInOrg = async (req, res) => {
         })
     }
     const { name, startDate, endDate, isActive } = req.body
+    const nextStart = startDate || sprint.startDate
+    const nextEnd = endDate || sprint.endDate
+    try {
+        await assertSprintNoOverlap(orgId, sprint.project_id, nextStart, nextEnd, sprintId);
+    } catch (error) {
+        return res.status(error.status || 409).json({ message: error.message, success: false });
+    }
     if (name) sprint.name = name
     if (startDate) sprint.startDate = startDate
     if (endDate) sprint.endDate = endDate
@@ -1193,14 +1354,22 @@ export const editSprint = async (req, res) => {
         })
     }
     if (name) sprint.name = name
-    if (startDate) sprint.startDate = startDate
-    if (endDate) sprint.endDate = endDate
 
     if (!sprint.project_id) {
         const defaultProject = await ensureDefaultProjectForOrg(orgId);
         await backfillProjectIdsForOrg(orgId, defaultProject._id);
         sprint.project_id = defaultProject._id;
     }
+
+    const nextStart = startDate || sprint.startDate
+    const nextEnd = endDate || sprint.endDate
+    try {
+        await assertSprintNoOverlap(orgId, sprint.project_id, nextStart, nextEnd, sprintId);
+    } catch (error) {
+        return res.status(error.status || 409).json({ message: error.message, success: false });
+    }
+    if (startDate) sprint.startDate = startDate
+    if (endDate) sprint.endDate = endDate
 
     await sprint.save()
     res.status(200).json({

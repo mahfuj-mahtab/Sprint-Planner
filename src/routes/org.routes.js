@@ -1,13 +1,16 @@
-import { addSprintToOrg, deleteSprint, editSprint, getSprintDetails, orgAddPlatformInSprint, orgAddPlatformPost, orgAddPlatformStatus, orgAddTaskToTeamInSprint, orgDelete, orgDeleteTaskFromTeamInSprint, orgEditTaskToTeamInSprint, orgFeatureAnalysisSummary, orgFeatureCreate, orgFeatureDelete, orgFeatureEdit, orgFeatureModuleCreate, orgFeatureModuleDelete, orgFeatureModuleEdit, orgGet, orgMemberAdd, orgMemberAddToTeam, orgMemberRemoveFromTeam, orgProjectCreate, orgProjectDelete, orgProjectDetails, orgProjectEdit, orgProjectList, orgProjectVersionAssignFeature, orgProjectVersionCreate, orgProjectVersionDelete, orgProjectVersionDetails, orgProjectVersionList, orgProjectVersionRemoveFeature, orgShowPlatformDetails, orgShowSingleTaskInSprint, orgTeamCreate, orgTeamDelete, orgTeamFetchAll, orgTeamFetchOne } from "../controllers/org.controllers.js";
+import { addSprintToOrg, deleteSprint, editSprint, getSprintDetails, orgAddPlatformInSprint, orgAddPlatformPost, orgAddPlatformStatus, orgAddTaskToTeamInSprint, orgDelete, orgDeleteTaskFromTeamInSprint, orgEditTaskToTeamInSprint, orgFeatureAnalysisSummary, orgFeatureCreate, orgFeatureDelete, orgFeatureEdit, orgFeatureModuleCreate, orgFeatureModuleDelete, orgFeatureModuleEdit, orgGet, orgMemberAdd, orgMemberAddToTeam, orgMemberRemoveFromTeam, orgProjectCreate, orgProjectDelete, orgProjectDetails, orgProjectEdit, orgProjectList, orgProjectVersionAssignFeature, orgProjectVersionCreate, orgProjectVersionDelete, orgProjectVersionDetails, orgProjectVersionList, orgProjectVersionRemoveFeature, orgProjectVersionUpdate, orgShowPlatformDetails, orgShowSingleTaskInSprint, orgTeamCreate, orgTeamDelete, orgTeamFetchAll, orgTeamFetchOne } from "../controllers/org.controllers.js";
+import { orgDashboard, projectDashboard } from "../controllers/dashboard.controllers.js";
 import { Router } from "express";
 import { authenticateToken } from "../middlewares/auth.middleware.js";
 
 const router = Router();
 router.get("/fetch/:orgId", authenticateToken, orgGet);
+router.get("/:orgId/dashboard", authenticateToken, orgDashboard);
 
 router.get("/:orgId/projects", authenticateToken, orgProjectList);
 router.post("/:orgId/projects", authenticateToken, orgProjectCreate);
 router.get("/:orgId/projects/:projectId", authenticateToken, orgProjectDetails);
+router.get("/:orgId/projects/:projectId/dashboard", authenticateToken, projectDashboard);
 router.patch("/:orgId/projects/:projectId", authenticateToken, orgProjectEdit);
 router.delete("/:orgId/projects/:projectId", authenticateToken, orgProjectDelete);
 
@@ -24,6 +27,7 @@ router.delete("/:orgId/projects/:projectId/features/:featureId", authenticateTok
 router.get("/:orgId/projects/:projectId/versions", authenticateToken, orgProjectVersionList);
 router.post("/:orgId/projects/:projectId/versions", authenticateToken, orgProjectVersionCreate);
 router.get("/:orgId/projects/:projectId/versions/:versionId", authenticateToken, orgProjectVersionDetails);
+router.patch("/:orgId/projects/:projectId/versions/:versionId", authenticateToken, orgProjectVersionUpdate);
 router.delete("/:orgId/projects/:projectId/versions/:versionId", authenticateToken, orgProjectVersionDelete);
 router.post("/:orgId/projects/:projectId/versions/:versionId/features", authenticateToken, orgProjectVersionAssignFeature);
 router.delete("/:orgId/projects/:projectId/versions/:versionId/features/:featureId", authenticateToken, orgProjectVersionRemoveFeature);
