@@ -1,6 +1,7 @@
 import Organization from "../models/organization.models.js";
 import User from "../models/users.models.js";
 import Task from "../models/task.models.js";
+import { normalizeTaskStatus } from "../utils/taskWorkflow.js";
 export const userLogin = async (req, res) => {
 
     const { email, password } = req.body;
@@ -169,7 +170,10 @@ export const userAssignedTasks = async (req, res) => {
         return res.status(200).json({
             message: "Assigned tasks fetched successfully",
             success: true,
-            tasks,
+            tasks: tasks.map((t) => ({
+                ...t,
+                status: normalizeTaskStatus(t.status),
+            })),
         });
     } catch (error) {
         return res.status(500).json({

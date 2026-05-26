@@ -13,7 +13,14 @@ import Partition from "../models/partition.models.js";
 import { getOrgForMember } from "../utils/orgAccess.js";
 import { ensureDefaultCategories } from "./finance.controllers.js";
 import { sumByProjectId } from "../utils/mongoIds.js";
+import {
+  buildPartitionScopeMap,
+  sumIncomeAllocationsForScopes,
+  sumBalancesByScope,
+} from "../utils/partitionFinance.js";
+import { effectivePartitionScope } from "../constants/partitionScopes.js";
 import { pickCurrentVersion } from "../utils/versionRules.js";
+import { bucketTaskForMetrics, isTaskDone, isTaskTerminal } from "../utils/taskWorkflow.js";
 
 const monthKey = (d) => {
   const date = new Date(d);
@@ -31,13 +38,15 @@ const lastNMonths = (n) => {
 };
 
 const countTasksByStatus = (tasks) => {
-  const out = { total: tasks.length, completed: 0, pending: 0, wip: 0, hold: 0, cancelled: 0 };
+  const out = { total: tasks.length, completed: 0, pending: 0, wip: 0, hold: 0, cancelled: 0, inReview: 0 };
   for (const t of tasks) {
-    if (t.status === "Completed") out.completed++;
-    else if (t.status === "Work In Progress") out.wip++;
-    else if (t.status === "Hold") out.hold++;
-    else if (t.status === "Cancelled") out.cancelled++;
+    const bucket = bucketTaskForMetrics(t.status);
+    if (bucket === "completed") out.completed++;
+    else if (bucket === "wip") out.wip++;
+    else if (bucket === "blocked") out.hold++;
+    else if (bucket === "cancelled") out.cancelled++;
     else out.pending++;
+    if (bucket === "wip" && t.status && String(t.status).includes("Review")) out.inReview++;
   }
   out.completionPct = out.total ? Math.round((out.completed / out.total) * 100) : 0;
   return out;
@@ -85,10 +94,11 @@ const buildMemberWorkload = (tasks, rosterMembers = []) => {
         };
       }
       byUser[id].total++;
-      if (task.status === "Completed") byUser[id].completed++;
-      else if (task.status === "Work In Progress") byUser[id].wip++;
-      else if (task.status === "Hold") byUser[id].hold++;
-      else if (task.status === "Cancelled") byUser[id].cancelled++;
+      const bucket = bucketTaskForMetrics(task.status);
+      if (bucket === "completed") byUser[id].completed++;
+      else if (bucket === "wip") byUser[id].wip++;
+      else if (bucket === "blocked") byUser[id].hold++;
+      else if (bucket === "cancelled") byUser[id].cancelled++;
       else byUser[id].pending++;
     }
   }
@@ -119,7 +129,8 @@ export const projectDashboard = async (req, res) => {
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
 
-    const [sprints, teams, tasks, features, modules, versions, incomes, expenses] = await Promise.all([
+    const [sprints, teams, tasks, features, modules, versions, incomes, expenses, partitions] =
+      await Promise.all([
       Sprint.find({ organization_id: orgId, project_id: projectId }).sort({ createdAt: -1 }),
       Team.find({ organization_id: orgId, project_id: projectId }).populate("members.user", "fullName email"),
       Task.find({ organization_id: orgId, project_id: projectId })
@@ -131,15 +142,28 @@ export const projectDashboard = async (req, res) => {
       ProjectVersion.find({ organization_id: orgId, project_id: projectId }),
       IncomeTransaction.find({ organization_id: orgId }),
       ExpenseTransaction.find({ organization_id: orgId }),
+      Partition.find({ organization_id: orgId }),
     ]);
 
+    const scopeMap = buildPartitionScopeMap(partitions);
+    const businessPartitionIds = new Set(
+      partitions.filter((p) => effectivePartitionScope(p) === "business").map((p) => p._id.toString())
+    );
+
     const projectIncomes = incomes.filter((i) => i.project_id?.toString() === pid);
-    const projectExpenses = expenses.filter((e) => e.project_id?.toString() === pid);
-    const revenue = projectIncomes.reduce((s, i) => s + Number(i.amount), 0);
+    const projectExpenses = expenses.filter(
+      (e) =>
+        e.project_id?.toString() === pid &&
+        businessPartitionIds.has(e.partition_id?.toString())
+    );
+    const revenue = projectIncomes.reduce(
+      (s, i) => s + sumIncomeAllocationsForScopes(i, scopeMap, ["business"]),
+      0
+    );
     const cost = projectExpenses.reduce((s, e) => s + Number(e.amount), 0);
     const monthIncome = projectIncomes
       .filter((i) => i.payment_date >= monthStart && i.payment_date <= monthEnd)
-      .reduce((s, i) => s + Number(i.amount), 0);
+      .reduce((s, i) => s + sumIncomeAllocationsForScopes(i, scopeMap, ["business"]), 0);
     const monthExpense = projectExpenses
       .filter((e) => e.expense_date >= monthStart && e.expense_date <= monthEnd)
       .reduce((s, e) => s + Number(e.amount), 0);
@@ -149,14 +173,14 @@ export const projectDashboard = async (req, res) => {
     const unassigned = tasks.filter((t) => !t.assignee?.length).length;
 
     const overdue = tasks.filter((t) => {
-      if (!t.endDate || t.status === "Completed" || t.status === "Cancelled") return false;
+      if (!t.endDate || isTaskTerminal(t.status)) return false;
       const end = new Date(t.endDate);
       end.setHours(23, 59, 59, 999);
       return end < now;
     }).length;
 
     const dueSoon = tasks.filter((t) => {
-      if (!t.endDate || t.status === "Completed" || t.status === "Cancelled") return false;
+      if (!t.endDate || isTaskTerminal(t.status)) return false;
       const end = new Date(t.endDate);
       const limit = new Date();
       limit.setDate(limit.getDate() + 3);
@@ -168,7 +192,7 @@ export const projectDashboard = async (req, res) => {
       const key = t.feature_id.toString();
       const prev = featureTaskMap.get(key) || { total: 0, completed: 0 };
       prev.total++;
-      if (t.status === "Completed") prev.completed++;
+      if (isTaskDone(t.status)) prev.completed++;
       featureTaskMap.set(key, prev);
     }
     let featuresCompleted = 0;
@@ -287,7 +311,7 @@ export const projectDashboard = async (req, res) => {
         members: memberWorkload,
         atRiskTasks: tasks
           .filter((t) => {
-            if (!t.endDate || t.status === "Completed" || t.status === "Cancelled") return false;
+            if (!t.endDate || isTaskTerminal(t.status)) return false;
             const end = new Date(t.endDate);
             end.setHours(23, 59, 59, 999);
             const limit = new Date();
@@ -304,10 +328,7 @@ export const projectDashboard = async (req, res) => {
             sprintName: t.sprint_id?.name || null,
             assignees: (t.assignee || []).map((u) => u.fullName).filter(Boolean),
             isOverdue:
-              t.endDate &&
-              t.status !== "Completed" &&
-              t.status !== "Cancelled" &&
-              new Date(t.endDate) < now,
+              t.endDate && !isTaskTerminal(t.status) && new Date(t.endDate) < now,
           })),
       },
     });
@@ -352,11 +373,25 @@ export const orgDashboard = async (req, res) => {
       Partition.find({ organization_id: orgId }),
     ]);
 
-    const totalBalance = partitions.reduce((s, p) => s + Number(p.balance), 0);
-    const monthIncome = incomes
+    const scopeMap = buildPartitionScopeMap(partitions);
+    const businessPartitionIds = new Set(
+      partitions.filter((p) => effectivePartitionScope(p) === "business").map((p) => p._id.toString())
+    );
+    const balanceByScope = sumBalancesByScope(partitions);
+    const totalBalance = balanceByScope.all;
+
+    const businessIncomes = incomes.map((i) => ({
+      ...i.toObject(),
+      businessAmount: sumIncomeAllocationsForScopes(i, scopeMap, ["business"]),
+    }));
+    const businessExpenses = expenses.filter((e) =>
+      businessPartitionIds.has(e.partition_id?.toString())
+    );
+
+    const monthIncome = businessIncomes
       .filter((i) => i.payment_date >= monthStart && i.payment_date <= monthEnd)
-      .reduce((s, i) => s + Number(i.amount), 0);
-    const monthExpense = expenses
+      .reduce((s, i) => s + Number(i.businessAmount), 0);
+    const monthExpense = businessExpenses
       .filter((e) => e.expense_date >= monthStart && e.expense_date <= monthEnd)
       .reduce((s, e) => s + Number(e.amount), 0);
 
@@ -364,28 +399,35 @@ export const orgDashboard = async (req, res) => {
       const [y, m] = key.split("-").map(Number);
       const start = new Date(y, m - 1, 1);
       const end = new Date(y, m, 0, 23, 59, 59, 999);
-      const income = incomes
+      const income = businessIncomes
         .filter((i) => i.payment_date >= start && i.payment_date <= end)
-        .reduce((s, i) => s + Number(i.amount), 0);
-      const expense = expenses
+        .reduce((s, i) => s + Number(i.businessAmount), 0);
+      const expense = businessExpenses
         .filter((e) => e.expense_date >= start && e.expense_date <= end)
         .reduce((s, e) => s + Number(e.amount), 0);
       return { month: key, label: start.toLocaleString("en", { month: "short" }), income, expense, profit: income - expense };
     });
 
     const incomeByCategoryMap = {};
-    for (const i of incomes) {
+    for (const i of businessIncomes) {
+      const amt = Number(i.businessAmount);
+      if (!amt) continue;
       const c = i.category || "Other";
-      incomeByCategoryMap[c] = (incomeByCategoryMap[c] || 0) + Number(i.amount);
+      incomeByCategoryMap[c] = (incomeByCategoryMap[c] || 0) + amt;
     }
     const expenseByCategoryMap = {};
-    for (const e of expenses) {
+    for (const e of businessExpenses) {
       const c = e.category || "Other";
       expenseByCategoryMap[c] = (expenseByCategoryMap[c] || 0) + Number(e.amount);
     }
 
-    const revenueMap = sumByProjectId(incomes);
-    const costMap = sumByProjectId(expenses);
+    const businessIncomesForProjects = businessIncomes
+      .filter((i) => i.project_id && i.businessAmount > 0)
+      .map((i) => ({ project_id: i.project_id, amount: i.businessAmount }));
+    const revenueMap = sumByProjectId(businessIncomesForProjects);
+    const costMap = sumByProjectId(
+      businessExpenses.filter((e) => e.project_id)
+    );
 
     const tasksByProject = {};
     for (const t of tasks) {
@@ -394,10 +436,11 @@ export const orgDashboard = async (req, res) => {
         tasksByProject[pid] = { total: 0, completed: 0, pending: 0, wip: 0, hold: 0, cancelled: 0 };
       }
       tasksByProject[pid].total++;
-      if (t.status === "Completed") tasksByProject[pid].completed++;
-      else if (t.status === "Work In Progress") tasksByProject[pid].wip++;
-      else if (t.status === "Hold") tasksByProject[pid].hold++;
-      else if (t.status === "Cancelled") tasksByProject[pid].cancelled++;
+      const bucket = bucketTaskForMetrics(t.status);
+      if (bucket === "completed") tasksByProject[pid].completed++;
+      else if (bucket === "wip") tasksByProject[pid].wip++;
+      else if (bucket === "blocked") tasksByProject[pid].hold++;
+      else if (bucket === "cancelled") tasksByProject[pid].cancelled++;
       else tasksByProject[pid].pending++;
     }
 
@@ -420,14 +463,7 @@ export const orgDashboard = async (req, res) => {
       };
     });
 
-    const taskStatus = {
-      total: tasks.length,
-      completed: tasks.filter((t) => t.status === "Completed").length,
-      pending: tasks.filter((t) => t.status === "Pending").length,
-      wip: tasks.filter((t) => t.status === "Work In Progress").length,
-      hold: tasks.filter((t) => t.status === "Hold").length,
-      cancelled: tasks.filter((t) => t.status === "Cancelled").length,
-    };
+    const taskStatus = countTasksByStatus(tasks);
     taskStatus.completionPct = taskStatus.total
       ? Math.round((taskStatus.completed / taskStatus.total) * 100)
       : 0;
@@ -441,7 +477,7 @@ export const orgDashboard = async (req, res) => {
     for (const f of features) {
       const featTasks = tasks.filter((t) => t.feature_id?.toString() === f._id.toString());
       const total = featTasks.length;
-      const completed = featTasks.filter((t) => t.status === "Completed").length;
+      const completed = featTasks.filter((t) => isTaskDone(t.status)).length;
       if (total && completed >= total) featureStats.completed++;
       else if (completed > 0) featureStats.inProgress++;
       else featureStats.pending++;
@@ -457,6 +493,8 @@ export const orgDashboard = async (req, res) => {
           monthExpense,
           netProfit: monthIncome - monthExpense,
           totalBalance,
+          businessBalance: balanceByScope.business,
+          ownerBalance: balanceByScope.owner,
           monthlyTrend,
           incomeByCategory: Object.entries(incomeByCategoryMap)
             .map(([name, amount]) => ({ name, amount }))

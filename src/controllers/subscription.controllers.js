@@ -14,6 +14,8 @@ import {
   resolveProjectId,
   assertPartitionInAccount,
 } from "./finance.controllers.js";
+import { assertExpensePartitionScope } from "../utils/partitionFinance.js";
+import { buildSubscriptionDashboard } from "../utils/subscriptionMetrics.js";
 
 const handleError = (res, error) => {
   const status = error.status || 500;
@@ -99,6 +101,21 @@ export const processDueSubscriptions = async (orgId) => {
   return results;
 };
 
+export const subscriptionDashboard = async (req, res) => {
+  const { orgId } = req.params;
+  try {
+    await getOrgForMember(orgId, req.user._id);
+    const dashboard = await buildSubscriptionDashboard(orgId);
+    return res.status(200).json({
+      message: "Subscription dashboard retrieved",
+      success: true,
+      dashboard,
+    });
+  } catch (error) {
+    return handleError(res, error);
+  }
+};
+
 export const subscriptionList = async (req, res) => {
   const { orgId } = req.params;
   const runProcess = req.query.process !== "false";
@@ -140,6 +157,8 @@ export const subscriptionCreate = async (req, res) => {
     is_active,
     auto_deduct,
     notes,
+    lifecycle,
+    planned_start_date,
   } = req.body;
 
   const amt = Number(amount);
@@ -157,10 +176,12 @@ export const subscriptionCreate = async (req, res) => {
   }
 
   const interval = BILLING_INTERVALS.includes(billing_interval) ? billing_interval : "monthly";
+  const life = lifecycle === "planned" ? "planned" : "running";
 
   try {
     await getOrgForMember(orgId, req.user._id);
-    await assertPartitionInAccount(partition_id, account_id, orgId);
+    const partition = await assertPartitionInAccount(partition_id, account_id, orgId);
+    assertExpensePartitionScope(partition, false);
     const categoryName = await resolveCategoryName(orgId, "subscription", category || "Other subscription");
     const resolvedProjectId = await resolveProjectId(project_id, orgId);
 
@@ -175,8 +196,10 @@ export const subscriptionCreate = async (req, res) => {
       billing_interval: interval,
       custom_interval_days: interval === "custom" ? Math.max(1, Number(custom_interval_days) || 30) : 30,
       next_due_date: startOfDay(new Date(next_due_date)),
+      lifecycle: life,
+      planned_start_date: planned_start_date ? startOfDay(new Date(planned_start_date)) : null,
       is_active: is_active !== false,
-      auto_deduct: auto_deduct !== false,
+      auto_deduct: life === "planned" ? false : auto_deduct !== false,
       notes: (notes || "").trim(),
     });
 
@@ -208,11 +231,13 @@ export const subscriptionUpdate = async (req, res) => {
     }
     if (body.category) sub.category = await resolveCategoryName(orgId, "subscription", body.category);
     if (body.account_id && body.partition_id) {
-      await assertPartitionInAccount(body.partition_id, body.account_id, orgId);
+      const partition = await assertPartitionInAccount(body.partition_id, body.account_id, orgId);
+      assertExpensePartitionScope(partition, false);
       sub.account_id = body.account_id;
       sub.partition_id = body.partition_id;
     } else if (body.partition_id) {
-      await assertPartitionInAccount(body.partition_id, sub.account_id, orgId);
+      const partition = await assertPartitionInAccount(body.partition_id, sub.account_id, orgId);
+      assertExpensePartitionScope(partition, false);
       sub.partition_id = body.partition_id;
     }
     if (body.project_id !== undefined) {
@@ -228,6 +253,15 @@ export const subscriptionUpdate = async (req, res) => {
     if (typeof body.is_active === "boolean") sub.is_active = body.is_active;
     if (typeof body.auto_deduct === "boolean") sub.auto_deduct = body.auto_deduct;
     if (typeof body.notes === "string") sub.notes = body.notes.trim();
+    if (body.lifecycle === "planned" || body.lifecycle === "running") {
+      sub.lifecycle = body.lifecycle;
+      if (body.lifecycle === "planned") sub.auto_deduct = false;
+    }
+    if (body.planned_start_date !== undefined) {
+      sub.planned_start_date = body.planned_start_date
+        ? startOfDay(new Date(body.planned_start_date))
+        : null;
+    }
 
     await sub.save();
     const populated = await Subscription.findById(sub._id).populate(populateOpts);
@@ -264,6 +298,11 @@ export const subscriptionChargeNow = async (req, res) => {
       }
       if (!sub.is_active) {
         const err = new Error("Subscription is paused");
+        err.status = 400;
+        throw err;
+      }
+      if (sub.lifecycle === "planned") {
+        const err = new Error("Move subscription to Running before charging");
         err.status = 400;
         throw err;
       }

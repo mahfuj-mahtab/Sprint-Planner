@@ -18,6 +18,17 @@ import {
   validateAllocations,
   withTransaction,
 } from "../utils/partitionBalance.js";
+import { DEFAULT_PARTITION_SCOPE, PARTITION_SCOPES } from "../constants/partitionScopes.js";
+import {
+  assertExpensePartitionScope,
+  sumBusinessExpenseInRange,
+  sumBusinessIncomeInRange,
+  sumBalancesByScope,
+  getPartitionsByOrg,
+  buildPartitionScopeMap,
+  sumIncomeAllocationsForScopes,
+} from "../utils/partitionFinance.js";
+import { resolveIncomeSourceId } from "./incomeSource.controllers.js";
 
 const handleError = (res, error) => {
   const status = error.status || 500;
@@ -153,33 +164,33 @@ export const financeOverview = async (req, res) => {
     await ensureDefaultCategories(orgId);
     const { start, end } = monthRange();
 
-    const [accounts, monthIncome, monthExpense, activeProjects, partitions] = await Promise.all([
-      FinancialAccount.find({ organization_id: orgId }),
-      IncomeTransaction.aggregate([
-        { $match: { organization_id: orgId, payment_date: { $gte: start, $lte: end } } },
-        { $group: { _id: null, total: { $sum: "$amount" } } },
-      ]),
-      ExpenseTransaction.aggregate([
-        { $match: { organization_id: orgId, expense_date: { $gte: start, $lte: end } } },
-        { $group: { _id: null, total: { $sum: "$amount" } } },
-      ]),
-      Project.countDocuments({ organization_id: orgId, status: "active", isArchived: false }),
-      Partition.find({ organization_id: orgId }),
-    ]);
+    const [accounts, businessMonthIncome, businessMonthExpense, activeProjects, partitions] =
+      await Promise.all([
+        FinancialAccount.find({ organization_id: orgId }),
+        sumBusinessIncomeInRange(orgId, start, end),
+        sumBusinessExpenseInRange(orgId, start, end),
+        Project.countDocuments({ organization_id: orgId, status: "active", isArchived: false }),
+        getPartitionsByOrg(orgId),
+      ]);
 
     const accountsWithBalances = await attachAccountBalances(accounts);
-    const totalIncome = monthIncome[0]?.total || 0;
-    const totalExpense = monthExpense[0]?.total || 0;
-    const totalBalance = partitions.reduce((s, p) => s + Number(p.balance), 0);
+    const balanceByScope = sumBalancesByScope(partitions);
+    const businessNetProfit = businessMonthIncome - businessMonthExpense;
 
     return res.status(200).json({
       message: "Finance overview retrieved",
       success: true,
       overview: {
-        monthIncome: totalIncome,
-        monthExpense: totalExpense,
-        netProfit: totalIncome - totalExpense,
-        totalBalance,
+        monthIncome: businessMonthIncome,
+        monthExpense: businessMonthExpense,
+        netProfit: businessNetProfit,
+        businessMonthIncome,
+        businessMonthExpense,
+        businessNetProfit,
+        businessBalance: balanceByScope.business,
+        ownerBalance: balanceByScope.owner,
+        excludedBalance: balanceByScope.excluded,
+        totalBalance: balanceByScope.all,
         activeProjects,
         accounts: accountsWithBalances,
       },
@@ -226,6 +237,7 @@ export const accountCreate = async (req, res) => {
       name: (defaultPartitionName || "Free Balance").trim(),
       balance: 0,
       is_default: true,
+      scope: DEFAULT_PARTITION_SCOPE,
     });
     await defaultPartition.save();
 
@@ -264,11 +276,13 @@ export const accountDelete = async (req, res) => {
 
 export const partitionCreate = async (req, res) => {
   const { orgId, accountId } = req.params;
-  const { name, balance } = req.body;
+  const { name, balance, scope } = req.body;
 
   if (!name?.trim()) {
     return res.status(400).json({ message: "Partition name is required", success: false });
   }
+
+  const partitionScope = PARTITION_SCOPES.includes(scope) ? scope : DEFAULT_PARTITION_SCOPE;
 
   try {
     await getOrgForMember(orgId, req.user._id);
@@ -283,9 +297,39 @@ export const partitionCreate = async (req, res) => {
       name: name.trim(),
       balance: Math.max(0, Number(balance) || 0),
       is_default: false,
+      scope: partitionScope,
     });
     await partition.save();
     return res.status(201).json({ message: "Partition created", success: true, partition });
+  } catch (error) {
+    const isDuplicate = error?.code === 11000;
+    if (isDuplicate) {
+      return res.status(409).json({ message: "A partition with this name already exists in this account", success: false });
+    }
+    return handleError(res, error);
+  }
+};
+
+export const partitionUpdate = async (req, res) => {
+  const { orgId, accountId, partitionId } = req.params;
+  const { name, scope } = req.body;
+
+  try {
+    await getOrgForMember(orgId, req.user._id);
+    const partition = await Partition.findOne({
+      _id: partitionId,
+      account_id: accountId,
+      organization_id: orgId,
+    });
+    if (!partition) {
+      return res.status(404).json({ message: "Partition not found", success: false });
+    }
+
+    if (name?.trim()) partition.name = name.trim();
+    if (scope && PARTITION_SCOPES.includes(scope)) partition.scope = scope;
+
+    await partition.save();
+    return res.status(200).json({ message: "Partition updated", success: true, partition });
   } catch (error) {
     const isDuplicate = error?.code === 11000;
     if (isDuplicate) {
@@ -309,6 +353,7 @@ export const incomeCreate = async (req, res) => {
     payment_date,
     payment_method,
     notes,
+    income_source_id,
   } = req.body;
 
   const amt = Number(amount);
@@ -328,6 +373,7 @@ export const incomeCreate = async (req, res) => {
 
     const categoryName = await resolveCategoryName(orgId, "income", category);
     const resolvedProjectId = await resolveProjectId(project_id, orgId);
+    const resolvedIncomeSourceId = await resolveIncomeSourceId(income_source_id, orgId);
     const mappedAllocations = await resolveIncomeAllocations({
       orgId,
       account_id,
@@ -349,6 +395,7 @@ export const incomeCreate = async (req, res) => {
         source: source || "other",
         project_id: resolvedProjectId,
         client_id: client_id || null,
+        income_source_id: resolvedIncomeSourceId,
         allocations: mappedAllocations,
         payment_date: payment_date ? new Date(payment_date) : new Date(),
         payment_method: payment_method || "other",
@@ -376,6 +423,7 @@ export const expenseCreate = async (req, res) => {
     is_personal,
     recurring,
     notes,
+    income_source_id,
   } = req.body;
 
   const amt = Number(amount);
@@ -388,9 +436,11 @@ export const expenseCreate = async (req, res) => {
 
   try {
     await getOrgForMember(orgId, req.user._id);
-    await assertPartitionInAccount(partition_id, account_id, orgId);
+    const partition = await assertPartitionInAccount(partition_id, account_id, orgId);
+    assertExpensePartitionScope(partition, Boolean(is_personal));
     const categoryName = await resolveCategoryName(orgId, "expense", category);
     const resolvedProjectId = await resolveProjectId(project_id, orgId);
+    const resolvedIncomeSourceId = await resolveIncomeSourceId(income_source_id, orgId);
 
     const expense = await withTransaction(async (session) => {
       await applyPartitionDelta(partition_id, -amt, session);
@@ -402,6 +452,7 @@ export const expenseCreate = async (req, res) => {
         amount: amt,
         category: categoryName,
         project_id: resolvedProjectId,
+        income_source_id: resolvedIncomeSourceId,
         expense_date: expense_date ? new Date(expense_date) : new Date(),
         is_personal: Boolean(is_personal),
         recurring: Boolean(recurring),
@@ -464,6 +515,9 @@ export const incomeUpdate = async (req, res) => {
         existing.project_id = await resolveProjectId(body.project_id, orgId);
       }
       if (body.client_id !== undefined) existing.client_id = body.client_id || null;
+      if (body.income_source_id !== undefined) {
+        existing.income_source_id = await resolveIncomeSourceId(body.income_source_id, orgId);
+      }
       if (body.payment_date) existing.payment_date = new Date(body.payment_date);
       if (body.payment_method) existing.payment_method = body.payment_method;
       if (typeof body.notes === "string") existing.notes = body.notes.trim();
@@ -518,7 +572,10 @@ export const expenseUpdate = async (req, res) => {
       return res.status(400).json({ message: "Valid amount is required", success: false });
     }
 
-    await assertPartitionInAccount(partition_id, account_id, orgId);
+    const partition = await assertPartitionInAccount(partition_id, account_id, orgId);
+    const personalFlag =
+      typeof body.is_personal === "boolean" ? body.is_personal : existing.is_personal;
+    assertExpensePartitionScope(partition, personalFlag);
 
     let categoryName = existing.category;
     if (body.category) {
@@ -535,6 +592,9 @@ export const expenseUpdate = async (req, res) => {
       if (body.partition_id) existing.partition_id = partition_id;
       if (body.project_id !== undefined) {
         existing.project_id = await resolveProjectId(body.project_id, orgId);
+      }
+      if (body.income_source_id !== undefined) {
+        existing.income_source_id = await resolveIncomeSourceId(body.income_source_id, orgId);
       }
       if (body.expense_date) existing.expense_date = new Date(body.expense_date);
       if (typeof body.is_personal === "boolean") existing.is_personal = body.is_personal;
@@ -624,11 +684,13 @@ export const transactionList = async (req, res) => {
         .sort({ payment_date: -1 })
         .limit(limit)
         .populate("project_id", "name")
-        .populate("client_id", "name"),
+        .populate("client_id", "name")
+        .populate("income_source_id", "name status"),
       ExpenseTransaction.find({ organization_id: orgId })
         .sort({ expense_date: -1 })
         .limit(limit)
-        .populate("project_id", "name"),
+        .populate("project_id", "name")
+        .populate("income_source_id", "name status"),
       PartitionTransfer.find({ organization_id: orgId }).sort({ transfer_date: -1 }).limit(limit),
     ]);
 
@@ -793,18 +855,42 @@ export const projectProfitSummary = async (req, res) => {
     await getOrgForMember(orgId, req.user._id);
     const projects = await Project.find({ organization_id: orgId, isArchived: false });
 
+    const partitions = await getPartitionsByOrg(orgId);
+    const scopeMap = buildPartitionScopeMap(partitions);
+    const businessIds = new Set(
+      partitions.filter((p) => scopeMap[p._id.toString()] === "business").map((p) => p._id.toString())
+    );
+
     const [incomes, expenses, unlinkedIncomes] = await Promise.all([
-      IncomeTransaction.find({ organization_id: orgId, project_id: { $ne: null } }).select("project_id amount"),
-      ExpenseTransaction.find({ organization_id: orgId, project_id: { $ne: null } }).select("project_id amount"),
+      IncomeTransaction.find({ organization_id: orgId, project_id: { $ne: null } }).select(
+        "project_id amount allocations"
+      ),
+      ExpenseTransaction.find({ organization_id: orgId, project_id: { $ne: null } }).select(
+        "project_id amount partition_id"
+      ),
       IncomeTransaction.find({
         organization_id: orgId,
         $or: [{ project_id: null }, { project_id: { $exists: false } }],
-      }).select("amount"),
+      }).select("amount allocations"),
     ]);
 
-    const revenueMap = sumByProjectId(incomes);
-    const costMap = sumByProjectId(expenses);
-    const unlinkedIncomeTotal = unlinkedIncomes.reduce((s, i) => s + Number(i.amount), 0);
+    const businessIncomes = incomes
+      .map((i) => ({
+        project_id: i.project_id,
+        amount: sumIncomeAllocationsForScopes(i, scopeMap, ["business"]),
+      }))
+      .filter((i) => i.amount > 0);
+
+    const businessExpenses = expenses.filter((e) =>
+      businessIds.has(e.partition_id?.toString())
+    );
+
+    const revenueMap = sumByProjectId(businessIncomes);
+    const costMap = sumByProjectId(businessExpenses);
+    const unlinkedIncomeTotal = unlinkedIncomes.reduce(
+      (s, i) => s + sumIncomeAllocationsForScopes(i, scopeMap, ["business"]),
+      0
+    );
 
     const summary = projects.map((p) => {
       const revenue = revenueMap[p._id.toString()] || 0;

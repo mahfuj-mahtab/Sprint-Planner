@@ -6,6 +6,7 @@ import {
   accountCreate,
   accountDelete,
   partitionCreate,
+  partitionUpdate,
   incomeCreate,
   incomeUpdate,
   incomeDelete,
@@ -21,6 +22,14 @@ import {
   categoryDelete,
 } from "../controllers/finance.controllers.js";
 import {
+  incomeSourceList,
+  incomeSourceGet,
+  incomeSourceCreate,
+  incomeSourceUpdate,
+  incomeSourceDelete,
+} from "../controllers/incomeSource.controllers.js";
+import {
+  subscriptionDashboard,
   subscriptionList,
   subscriptionCreate,
   subscriptionUpdate,
@@ -36,6 +45,7 @@ router.get("/accounts", authenticateToken, accountList);
 router.post("/accounts", authenticateToken, accountCreate);
 router.delete("/accounts/:accountId", authenticateToken, accountDelete);
 router.post("/accounts/:accountId/partitions", authenticateToken, partitionCreate);
+router.patch("/accounts/:accountId/partitions/:partitionId", authenticateToken, partitionUpdate);
 
 router.get("/transactions", authenticateToken, transactionList);
 router.post("/income", authenticateToken, incomeCreate);
@@ -47,11 +57,18 @@ router.delete("/expense/:expenseId", authenticateToken, expenseDelete);
 router.post("/transfer", authenticateToken, partitionTransferCreate);
 router.get("/project-profit", authenticateToken, projectProfitSummary);
 
+router.get("/income-sources", authenticateToken, incomeSourceList);
+router.post("/income-sources", authenticateToken, incomeSourceCreate);
+router.get("/income-sources/:sourceId", authenticateToken, incomeSourceGet);
+router.patch("/income-sources/:sourceId", authenticateToken, incomeSourceUpdate);
+router.delete("/income-sources/:sourceId", authenticateToken, incomeSourceDelete);
+
 router.get("/categories", authenticateToken, categoryList);
 router.post("/categories", authenticateToken, categoryCreate);
 router.patch("/categories/:categoryId", authenticateToken, categoryUpdate);
 router.delete("/categories/:categoryId", authenticateToken, categoryDelete);
 
+router.get("/subscriptions/dashboard", authenticateToken, subscriptionDashboard);
 router.get("/subscriptions", authenticateToken, subscriptionList);
 router.post("/subscriptions", authenticateToken, subscriptionCreate);
 router.patch("/subscriptions/:subscriptionId", authenticateToken, subscriptionUpdate);

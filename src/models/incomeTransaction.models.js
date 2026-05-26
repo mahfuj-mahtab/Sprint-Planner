@@ -47,6 +47,12 @@ const incomeTransactionSchema = new mongoose.Schema(
       ref: "Client",
       default: null,
     },
+    income_source_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "IncomeSource",
+      default: null,
+      index: true,
+    },
     allocations: { type: [allocationSchema], required: true },
     payment_date: { type: Date, required: true },
     payment_method: {

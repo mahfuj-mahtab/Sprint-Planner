@@ -33,6 +33,13 @@ const subscriptionSchema = new mongoose.Schema(
     },
     custom_interval_days: { type: Number, min: 1, default: 30 },
     next_due_date: { type: Date, required: true },
+    /** running = live recurring cost; planned = expected but not started yet */
+    lifecycle: {
+      type: String,
+      enum: ["running", "planned"],
+      default: "running",
+    },
+    planned_start_date: { type: Date, default: null },
     is_active: { type: Boolean, default: true },
     auto_deduct: { type: Boolean, default: true },
     last_charged_at: { type: Date, default: null },

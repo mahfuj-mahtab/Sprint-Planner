@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { ALL_TASK_STATUSES, TASK_TYPES, TASK_PRIORITIES } from '../constants/taskWorkflow.js';
 
 const taskSchema = new mongoose.Schema({
     title: {
@@ -12,13 +13,28 @@ const taskSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['Pending', 'Work In Progress', 'Hold', 'Cancelled', 'Completed'],
-        default: 'Pending',
+        enum: ALL_TASK_STATUSES,
+        default: 'Backlog',
+    },
+    task_type: {
+        type: String,
+        enum: TASK_TYPES,
+        default: 'feature',
     },
     priority: {
         type: String,
-        enum: ['Low', 'Medium', 'High'],
+        enum: TASK_PRIORITIES,
         default: 'Medium',
+    },
+    blocked_reason: {
+        type: String,
+        trim: true,
+        default: '',
+    },
+    acceptance_criteria: {
+        type: String,
+        trim: true,
+        default: '',
     },
     startDate: {
         type: Date,

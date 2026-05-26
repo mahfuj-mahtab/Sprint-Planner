@@ -17,6 +17,33 @@ import {
 } from "../utils/versionRules.js";
 import { assertSprintNoOverlap } from "../utils/sprintRules.js";
 import { assertValidRange } from "../utils/dateRanges.js";
+import { getOrgForMember } from "../utils/orgAccess.js";
+import {
+    normalizeTaskStatus,
+    resolveTaskStatusForWrite,
+    assertTaskTransition,
+    isTaskDone,
+} from "../utils/taskWorkflow.js";
+import { TASK_TYPES, TASK_PRIORITIES } from "../constants/taskWorkflow.js";
+
+const serializeTask = (task) => {
+    const obj = task.toObject ? task.toObject() : { ...task };
+    obj.status = normalizeTaskStatus(obj.status);
+    return obj;
+};
+
+const assertTaskMutateAccess = (org, task, userId) => {
+    const isOwner = org.owner_id.toString() === userId.toString();
+    if (isOwner) return;
+    const isAssignee = (task.assignee || []).some(
+        (a) => (a._id || a).toString() === userId.toString()
+    );
+    if (!isAssignee) {
+        const err = new Error("You are not authorized to update this task");
+        err.status = 403;
+        throw err;
+    }
+};
 import User from "../models/users.models.js";
 import Platform, { PlatformStatus } from "../models/platform.models.js";
 import Post from "../models/post.models.js";
@@ -205,7 +232,7 @@ export const orgGet = async (req, res) => {
         for (const sprint of sprints) {
             const tasks = await Task.find({ sprint_id: sprint._id, organization_id: orgId });
             const total_tasks = tasks.length;
-            const completed_tasks = tasks.filter((task) => task.status === "Completed").length;
+            const completed_tasks = tasks.filter((task) => isTaskDone(task.status)).length;
             sprintDetails.push({
                 sprint,
                 total_tasks,
@@ -367,13 +394,7 @@ export const orgProjectCreate = async (req, res) => {
     }
 
     try {
-        const org = await Organization.findById(orgId);
-        if (!org) {
-            return res.status(404).json({ message: "Organization not found", success: false });
-        }
-        if (org.owner_id.toString() !== req.user._id) {
-            return res.status(403).json({ message: "You do not have permission to create projects for this organization", success: false });
-        }
+        await getOrgForMember(orgId, req.user._id);
 
         const project = new Project({
             name: name.trim(),
@@ -505,7 +526,7 @@ export const orgProjectDetails = async (req, res) => {
         for (const sprint of sprints) {
             const tasks = await Task.find({ sprint_id: sprint._id, organization_id: orgId });
             const total_tasks = tasks.length;
-            const completed_tasks = tasks.filter((task) => task.status === "Completed").length;
+            const completed_tasks = tasks.filter((task) => isTaskDone(task.status)).length;
             sprintDetails.push({ sprint, total_tasks, completed_tasks });
         }
 
@@ -547,7 +568,7 @@ export const orgFeatureAnalysisSummary = async (req, res) => {
             if (!key) continue;
             const prev = taskCountsByFeature.get(key) || { totalTasks: 0, completedTasks: 0 };
             prev.totalTasks += 1;
-            if (t.status === "Completed") prev.completedTasks += 1;
+            if (isTaskDone(t.status)) prev.completedTasks += 1;
             taskCountsByFeature.set(key, prev);
         }
 
@@ -1009,7 +1030,7 @@ export const orgProjectVersionDetails = async (req, res) => {
             if (!key) continue;
             const prev = taskCountsByFeature.get(key) || { totalTasks: 0, completedTasks: 0 };
             prev.totalTasks += 1;
-            if (t.status === "Completed") prev.completedTasks += 1;
+            if (isTaskDone(t.status)) prev.completedTasks += 1;
             taskCountsByFeature.set(key, prev);
         }
 
@@ -1183,15 +1204,21 @@ export const getSprintDetails = async (req, res) => {
         // 4. Attach tasks to teams (JS mapping)
         const teamsWithTasks = teams.map(team => ({
             ...team.toObject(),
-            tasks: tasks.filter(
-                task => task.team_id?.toString() === team._id.toString()
-            ),
-            completed_task: tasks.filter(task => task.status === "Completed" && task.team_id?.toString() === team._id.toString())
+            tasks: tasks
+                .filter((task) => task.team_id?.toString() === team._id.toString())
+                .map(serializeTask),
+            completed_task: tasks.filter(
+                (task) => isTaskDone(task.status) && task.team_id?.toString() === team._id.toString()
+            ).length,
         }));
 
         res.status(200).json({
             sprint,
             teams: teamsWithTasks,
+            workflow: {
+                statuses: ["Backlog", "In Progress", "In Review", "Blocked", "Done", "Cancelled"],
+                kanbanColumns: ["Backlog", "In Progress", "In Review", "Blocked", "Done"],
+            },
         });
 
     } catch (error) {
@@ -1649,7 +1676,20 @@ export const orgTeamFetchOne = async (req, res) => {
 }
 export const orgAddTaskToTeamInSprint = async (req, res) => {
     const { orgId, sprintId } = req.params
-    const { team, name, description, status, priority, startDate, endDate, members, featureId } = req.body
+    const {
+        team,
+        name,
+        description,
+        status,
+        priority,
+        startDate,
+        endDate,
+        members,
+        featureId,
+        task_type,
+        blocked_reason,
+        acceptance_criteria,
+    } = req.body
     const org = await Organization.findById(orgId)
     if (!org) {
         return res.status(403).json({
@@ -1716,8 +1756,11 @@ export const orgAddTaskToTeamInSprint = async (req, res) => {
     const newTask = new Task({
         title: name,
         description,
-        status,
-        priority,
+        status: resolveTaskStatusForWrite(status || "Backlog"),
+        task_type: TASK_TYPES.includes(task_type) ? task_type : "feature",
+        priority: TASK_PRIORITIES.includes(priority) ? priority : "Medium",
+        blocked_reason: (blocked_reason || "").trim(),
+        acceptance_criteria: (acceptance_criteria || "").trim(),
         startDate,
         endDate,
         sprint_id: sprintId,
@@ -1733,7 +1776,7 @@ export const orgAddTaskToTeamInSprint = async (req, res) => {
     res.status(201).json({
         message: "Task added to team in sprint successfully",
         success: true,
-        task: newTask
+        task: serializeTask(newTask)
     })
 }
 export const orgShowSingleTaskInSprint = async (req, res) => {
@@ -1773,12 +1816,73 @@ export const orgShowSingleTaskInSprint = async (req, res) => {
     res.status(200).json({
         message: "Task fetched successfully",
         success: true,
-        task: task
+        task: serializeTask(task)
     })
 }
+export const orgPatchTaskStatus = async (req, res) => {
+    const { orgId, sprintId, taskId } = req.params;
+    const { status, blocked_reason } = req.body;
+
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) {
+            return res.status(404).json({ message: "Org not found", success: false });
+        }
+
+        const task = await Task.findOne({
+            _id: taskId,
+            sprint_id: sprintId,
+            organization_id: orgId,
+        }).populate("assignee", "_id");
+
+        if (!task) {
+            return res.status(404).json({ message: "Task not found", success: false });
+        }
+
+        assertTaskMutateAccess(org, task, req.user._id);
+
+        const nextStatus = resolveTaskStatusForWrite(status);
+        assertTaskTransition(task.status, nextStatus);
+
+        task.status = nextStatus;
+        if (nextStatus === "Blocked") {
+            task.blocked_reason = (blocked_reason || task.blocked_reason || "").trim();
+        } else {
+            task.blocked_reason = "";
+        }
+
+        await task.save();
+
+        return res.status(200).json({
+            message: "Task status updated",
+            success: true,
+            task: serializeTask(task),
+        });
+    } catch (error) {
+        const code = error.status || 500;
+        return res.status(code).json({
+            message: error.message || "Failed to update task status",
+            success: false,
+        });
+    }
+};
+
 export const orgEditTaskToTeamInSprint = async (req, res) => {
     const { orgId, sprintId, taskId } = req.params
-    const { team, name, description, status, priority, startDate, endDate, members, featureId } = req.body
+    const {
+        team,
+        name,
+        description,
+        status,
+        priority,
+        startDate,
+        endDate,
+        members,
+        featureId,
+        task_type,
+        blocked_reason,
+        acceptance_criteria,
+    } = req.body
     const org = await Organization.findById(orgId)
     if (!org) {
         return res.status(403).json({
@@ -1844,9 +1948,16 @@ export const orgEditTaskToTeamInSprint = async (req, res) => {
         })
     }
     task.title = name || task.title
-    task.description = description || task.description
-    task.status = status || task.status
-    task.priority = priority || task.priority
+    task.description = description ?? task.description
+    if (status) {
+        const nextStatus = resolveTaskStatusForWrite(status);
+        assertTaskTransition(task.status, nextStatus);
+        task.status = nextStatus;
+    }
+    if (priority && TASK_PRIORITIES.includes(priority)) task.priority = priority
+    if (task_type && TASK_TYPES.includes(task_type)) task.task_type = task_type
+    if (blocked_reason !== undefined) task.blocked_reason = (blocked_reason || "").trim()
+    if (acceptance_criteria !== undefined) task.acceptance_criteria = (acceptance_criteria || "").trim()
     task.startDate = startDate || task.startDate
     task.endDate = endDate || task.endDate
     task.assignee = []
@@ -1869,7 +1980,7 @@ export const orgEditTaskToTeamInSprint = async (req, res) => {
     res.status(201).json({
         message: "Task edited successfully",
         success: true,
-        task: task
+        task: serializeTask(task)
     })
 }
 export const orgDeleteTaskFromTeamInSprint = async (req, res) => {

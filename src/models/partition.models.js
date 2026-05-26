@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { DEFAULT_PARTITION_SCOPE, PARTITION_SCOPES } from "../constants/partitionScopes.js";
 
 const partitionSchema = new mongoose.Schema(
   {
@@ -17,6 +18,11 @@ const partitionSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     balance: { type: Number, default: 0, min: 0 },
     is_default: { type: Boolean, default: false },
+    scope: {
+      type: String,
+      enum: PARTITION_SCOPES,
+      default: DEFAULT_PARTITION_SCOPE,
+    },
   },
   { timestamps: true }
 );

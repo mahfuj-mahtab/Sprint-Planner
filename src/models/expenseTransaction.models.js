@@ -31,6 +31,12 @@ const expenseTransactionSchema = new mongoose.Schema(
       ref: "Project",
       default: null,
     },
+    income_source_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "IncomeSource",
+      default: null,
+      index: true,
+    },
     expense_date: { type: Date, required: true },
     is_personal: { type: Boolean, default: false },
     recurring: { type: Boolean, default: false },
