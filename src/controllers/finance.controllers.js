@@ -11,7 +11,7 @@ import {
   DEFAULT_SUBSCRIPTION_CATEGORIES,
 } from "../constants/defaultFinanceCategories.js";
 import Subscription from "../models/subscription.models.js";
-import { getOrgForMember, assertOrgOwner } from "../utils/orgAccess.js";
+import { getOrgForMember, assertCanWriteOrg, assertCanManageOrgMembers } from "../utils/orgAccess.js";
 import { toObjectId, sumByProjectId } from "../utils/mongoIds.js";
 import {
   applyPartitionDelta,
@@ -160,7 +160,7 @@ const resolveIncomeAllocations = async ({ orgId, account_id, amount, allocations
 export const financeOverview = async (req, res) => {
   const { orgId } = req.params;
   try {
-    await getOrgForMember(orgId, req.user._id);
+    const { access } = await getOrgForMember(orgId, req.user._id);
     await ensureDefaultCategories(orgId);
     const { start, end } = monthRange();
 
@@ -193,6 +193,7 @@ export const financeOverview = async (req, res) => {
         totalBalance: balanceByScope.all,
         activeProjects,
         accounts: accountsWithBalances,
+        access,
       },
     });
   } catch (error) {
@@ -221,7 +222,7 @@ export const accountCreate = async (req, res) => {
   }
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
 
     const account = new FinancialAccount({
       organization_id: orgId,
@@ -264,7 +265,7 @@ export const accountUpdate = async (req, res) => {
   const { name, type, currency } = req.body;
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const account = await FinancialAccount.findOne({ _id: accountId, organization_id: orgId });
     if (!account) {
       return res.status(404).json({ message: "Account not found", success: false });
@@ -288,7 +289,7 @@ export const accountUpdate = async (req, res) => {
 export const accountDelete = async (req, res) => {
   const { orgId, accountId } = req.params;
   try {
-    await assertOrgOwner(orgId, req.user._id);
+    await assertCanManageOrgMembers(orgId, req.user._id);
     const account = await FinancialAccount.findOneAndDelete({ _id: accountId, organization_id: orgId });
     if (!account) {
       return res.status(404).json({ message: "Account not found", success: false });
@@ -311,7 +312,7 @@ export const partitionCreate = async (req, res) => {
   const partitionScope = PARTITION_SCOPES.includes(scope) ? scope : DEFAULT_PARTITION_SCOPE;
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const account = await FinancialAccount.findOne({ _id: accountId, organization_id: orgId });
     if (!account) {
       return res.status(404).json({ message: "Account not found", success: false });
@@ -341,7 +342,7 @@ export const partitionUpdate = async (req, res) => {
   const { name, scope } = req.body;
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const partition = await Partition.findOne({
       _id: partitionId,
       account_id: accountId,
@@ -369,7 +370,7 @@ export const partitionDelete = async (req, res) => {
   const { orgId, accountId, partitionId } = req.params;
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const partition = await Partition.findOne({
       _id: partitionId,
       account_id: accountId,
@@ -436,7 +437,7 @@ export const incomeCreate = async (req, res) => {
   }
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const account = await FinancialAccount.findOne({ _id: account_id, organization_id: orgId });
     if (!account) {
       return res.status(404).json({ message: "Account not found", success: false });
@@ -506,7 +507,7 @@ export const expenseCreate = async (req, res) => {
   }
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const partition = await assertPartitionInAccount(partition_id, account_id, orgId);
     assertExpensePartitionScope(partition, Boolean(is_personal));
     const categoryName = await resolveCategoryName(orgId, "expense", category);
@@ -544,7 +545,7 @@ export const incomeUpdate = async (req, res) => {
   const body = req.body;
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const existing = await IncomeTransaction.findOne({ _id: incomeId, organization_id: orgId });
     if (!existing) {
       return res.status(404).json({ message: "Income not found", success: false });
@@ -606,7 +607,7 @@ export const incomeUpdate = async (req, res) => {
 export const incomeDelete = async (req, res) => {
   const { orgId, incomeId } = req.params;
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const existing = await IncomeTransaction.findOne({ _id: incomeId, organization_id: orgId });
     if (!existing) {
       return res.status(404).json({ message: "Income not found", success: false });
@@ -630,7 +631,7 @@ export const expenseUpdate = async (req, res) => {
   const body = req.body;
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const existing = await ExpenseTransaction.findOne({ _id: expenseId, organization_id: orgId });
     if (!existing) {
       return res.status(404).json({ message: "Expense not found", success: false });
@@ -684,7 +685,7 @@ export const expenseUpdate = async (req, res) => {
 export const expenseDelete = async (req, res) => {
   const { orgId, expenseId } = req.params;
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const existing = await ExpenseTransaction.findOne({ _id: expenseId, organization_id: orgId });
     if (!existing) {
       return res.status(404).json({ message: "Expense not found", success: false });
@@ -717,7 +718,7 @@ export const partitionTransferCreate = async (req, res) => {
   }
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     await assertPartitionInAccount(from_partition_id, account_id, orgId);
     await assertPartitionInAccount(to_partition_id, account_id, orgId);
 
@@ -822,7 +823,7 @@ export const categoryCreate = async (req, res) => {
   }
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const category = new FinanceCategory({
       organization_id: orgId,
       name: name.trim(),
@@ -848,7 +849,7 @@ export const categoryUpdate = async (req, res) => {
   }
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const category = await FinanceCategory.findOne({ _id: categoryId, organization_id: orgId });
     if (!category) {
       return res.status(404).json({ message: "Category not found", success: false });
@@ -891,7 +892,7 @@ export const categoryDelete = async (req, res) => {
   const { orgId, categoryId } = req.params;
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const category = await FinanceCategory.findOne({ _id: categoryId, organization_id: orgId });
     if (!category) {
       return res.status(404).json({ message: "Category not found", success: false });

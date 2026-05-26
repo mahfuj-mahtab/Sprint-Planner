@@ -1,6 +1,6 @@
 import IncomeSource from "../models/incomeSource.models.js";
 import Project from "../models/project.models.js";
-import { getOrgForMember } from "../utils/orgAccess.js";
+import { getOrgForMember, assertCanWriteOrg } from "../utils/orgAccess.js";
 import { toObjectId } from "../utils/mongoIds.js";
 import {
   normalizeForecastPeriods,
@@ -139,7 +139,7 @@ export const incomeSourceCreate = async (req, res) => {
   }
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const project_id = await resolveProjectId(req.body.project_id, orgId);
 
     const source = new IncomeSource({
@@ -186,7 +186,7 @@ export const incomeSourceUpdate = async (req, res) => {
   const parsed = parseBody(req.body);
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const source = await IncomeSource.findOne({ _id: sourceId, organization_id: orgId });
     if (!source) {
       return res.status(404).json({ message: "Income source not found", success: false });
@@ -237,7 +237,7 @@ export const incomeSourceUpdate = async (req, res) => {
 export const incomeSourceDelete = async (req, res) => {
   const { orgId, sourceId } = req.params;
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const source = await IncomeSource.findOneAndDelete({ _id: sourceId, organization_id: orgId });
     if (!source) {
       return res.status(404).json({ message: "Income source not found", success: false });

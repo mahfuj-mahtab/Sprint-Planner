@@ -1,7 +1,7 @@
 import Subscription from "../models/subscription.models.js";
 import ExpenseTransaction from "../models/expenseTransaction.models.js";
 import Partition from "../models/partition.models.js";
-import { getOrgForMember } from "../utils/orgAccess.js";
+import { getOrgForMember, assertCanWriteOrg } from "../utils/orgAccess.js";
 import { applyPartitionDelta, withTransaction } from "../utils/partitionBalance.js";
 import {
   advanceDueDate,
@@ -179,7 +179,7 @@ export const subscriptionCreate = async (req, res) => {
   const life = lifecycle === "planned" ? "planned" : "running";
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const partition = await assertPartitionInAccount(partition_id, account_id, orgId);
     assertExpensePartitionScope(partition, false);
     const categoryName = await resolveCategoryName(orgId, "subscription", category || "Other subscription");
@@ -215,7 +215,7 @@ export const subscriptionUpdate = async (req, res) => {
   const body = req.body;
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const sub = await Subscription.findOne({ _id: subscriptionId, organization_id: orgId });
     if (!sub) {
       return res.status(404).json({ message: "Subscription not found", success: false });
@@ -274,7 +274,7 @@ export const subscriptionUpdate = async (req, res) => {
 export const subscriptionDelete = async (req, res) => {
   const { orgId, subscriptionId } = req.params;
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const sub = await Subscription.findOneAndDelete({ _id: subscriptionId, organization_id: orgId });
     if (!sub) {
       return res.status(404).json({ message: "Subscription not found", success: false });
@@ -288,7 +288,7 @@ export const subscriptionDelete = async (req, res) => {
 export const subscriptionChargeNow = async (req, res) => {
   const { orgId, subscriptionId } = req.params;
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const result = await withTransaction(async (session) => {
       const sub = await Subscription.findOne({ _id: subscriptionId, organization_id: orgId }).session(session);
       if (!sub) {
@@ -325,7 +325,7 @@ export const subscriptionChargeNow = async (req, res) => {
 export const subscriptionProcessDue = async (req, res) => {
   const { orgId } = req.params;
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const processed = await processDueSubscriptions(orgId);
     return res.status(200).json({ message: "Due subscriptions processed", success: true, processed });
   } catch (error) {

@@ -11,6 +11,7 @@ import IncomeTransaction from "../models/incomeTransaction.models.js";
 import ExpenseTransaction from "../models/expenseTransaction.models.js";
 import Partition from "../models/partition.models.js";
 import { getOrgForMember } from "../utils/orgAccess.js";
+import { canViewProject } from "../utils/projectAccess.js";
 import { ensureDefaultCategories } from "./finance.controllers.js";
 import { sumByProjectId } from "../utils/mongoIds.js";
 import {
@@ -345,7 +346,7 @@ export const orgDashboard = async (req, res) => {
   const { orgId } = req.params;
 
   try {
-    const org = await getOrgForMember(orgId, req.user._id);
+    const { org, isOwner, access } = await getOrgForMember(orgId, req.user._id);
     await ensureDefaultCategories(orgId);
 
     const now = new Date();
@@ -363,7 +364,7 @@ export const orgDashboard = async (req, res) => {
       expenses,
       partitions,
     ] = await Promise.all([
-      Project.find({ organization_id: orgId, isArchived: false }).sort({ createdAt: -1 }),
+      Project.find({ organization_id: orgId, isArchived: false }).sort({ createdAt: -1 }).lean(),
       Task.find({ organization_id: orgId }),
       Sprint.find({ organization_id: orgId }),
       Client.countDocuments({ organization_id: orgId }),
@@ -372,6 +373,8 @@ export const orgDashboard = async (req, res) => {
       ExpenseTransaction.find({ organization_id: orgId }),
       Partition.find({ organization_id: orgId }),
     ]);
+
+    const visibleProjects = projects.filter((p) => canViewProject(p, req.user._id, isOwner));
 
     const scopeMap = buildPartitionScopeMap(partitions);
     const businessPartitionIds = new Set(
@@ -444,7 +447,7 @@ export const orgDashboard = async (req, res) => {
       else tasksByProject[pid].pending++;
     }
 
-    const projectStats = projects.map((p) => {
+    const projectStats = visibleProjects.map((p) => {
       const pid = p._id.toString();
       const ts = tasksByProject[pid] || { total: 0, completed: 0, pending: 0, wip: 0, hold: 0, cancelled: 0 };
       const projectSprints = sprints.filter((s) => s.project_id?.toString() === pid);
@@ -487,11 +490,13 @@ export const orgDashboard = async (req, res) => {
       message: "Dashboard data retrieved",
       success: true,
       dashboard: {
+        access,
         organization: { _id: org._id, name: org.name },
         finance: {
           monthIncome,
           monthExpense,
           netProfit: monthIncome - monthExpense,
+          periodLabel: monthStart.toLocaleString("en", { month: "long", year: "numeric" }),
           totalBalance,
           businessBalance: balanceByScope.business,
           ownerBalance: balanceByScope.owner,
@@ -504,7 +509,7 @@ export const orgDashboard = async (req, res) => {
             .sort((a, b) => b.amount - a.amount),
         },
         counts: {
-          projects: projects.length,
+          projects: visibleProjects.length,
           activeSprints: sprints.filter((s) => s.isActive).length,
           totalSprints: sprints.length,
           clients: clientsCount,

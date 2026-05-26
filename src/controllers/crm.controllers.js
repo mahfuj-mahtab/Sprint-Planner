@@ -1,7 +1,7 @@
 import Client from "../models/client.models.js";
 import Project from "../models/project.models.js";
 import IncomeTransaction from "../models/incomeTransaction.models.js";
-import { getOrgForMember, assertOrgOwner } from "../utils/orgAccess.js";
+import { getOrgForMember, assertCanWriteOrg, assertCanManageOrgMembers } from "../utils/orgAccess.js";
 import { normalizeFinanceCurrency } from "../constants/financeCurrencies.js";
 import {
   CLIENT_STATUSES,
@@ -64,12 +64,12 @@ const applyClientFields = (client, body) => {
 export const crmDashboard = async (req, res) => {
   const { orgId } = req.params;
   try {
-    await getOrgForMember(orgId, req.user._id);
+    const { access } = await getOrgForMember(orgId, req.user._id);
     const dashboard = await buildCrmDashboard(orgId);
     return res.status(200).json({
       message: "CRM dashboard retrieved",
       success: true,
-      dashboard,
+      dashboard: { ...dashboard, access },
     });
   } catch (error) {
     return handleError(res, error);
@@ -79,12 +79,13 @@ export const crmDashboard = async (req, res) => {
 export const crmOverview = async (req, res) => {
   const { orgId } = req.params;
   try {
-    await getOrgForMember(orgId, req.user._id);
+    const { access } = await getOrgForMember(orgId, req.user._id);
     const overview = await buildCrmOverview(orgId);
     return res.status(200).json({
       message: "CRM overview retrieved",
       success: true,
       overview: {
+        access,
         totalClients: overview.totalClients,
         leads: overview.leads,
         activeClients: (overview.byStatus.active || 0) + (overview.byStatus.negotiation || 0),
@@ -145,7 +146,7 @@ export const clientCreate = async (req, res) => {
   }
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const client = new Client({
       organization_id: orgId,
       name: name.trim(),
@@ -217,7 +218,7 @@ export const clientUpdate = async (req, res) => {
   const { orgId, clientId } = req.params;
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const client = await Client.findOne({ _id: clientId, organization_id: orgId });
     if (!client) {
       return res.status(404).json({ message: "Client not found", success: false });
@@ -238,7 +239,7 @@ export const clientUpdate = async (req, res) => {
 export const clientDelete = async (req, res) => {
   const { orgId, clientId } = req.params;
   try {
-    await assertOrgOwner(orgId, req.user._id);
+    await assertCanManageOrgMembers(orgId, req.user._id);
     const client = await Client.findOneAndDelete({ _id: clientId, organization_id: orgId });
     if (!client) {
       return res.status(404).json({ message: "Client not found", success: false });
@@ -259,7 +260,7 @@ export const clientAddLog = async (req, res) => {
   }
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const client = await Client.findOne({ _id: clientId, organization_id: orgId });
     if (!client) {
       return res.status(404).json({ message: "Client not found", success: false });
@@ -281,7 +282,7 @@ export const clientDeleteLog = async (req, res) => {
   const { orgId, clientId, logId } = req.params;
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const client = await Client.findOne({ _id: clientId, organization_id: orgId });
     if (!client) {
       return res.status(404).json({ message: "Client not found", success: false });
@@ -311,7 +312,7 @@ export const clientSnoozeFollowUp = async (req, res) => {
   const addDays = Math.max(1, Math.min(90, Number(days) || 7));
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    await assertCanWriteOrg(orgId, req.user._id);
     const client = await Client.findOne({ _id: clientId, organization_id: orgId });
     if (!client) {
       return res.status(404).json({ message: "Client not found", success: false });

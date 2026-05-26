@@ -48,6 +48,25 @@ const projectSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    members: [
+      {
+        user: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
+          required: true,
+        },
+        role: {
+          type: String,
+          enum: ["owner", "member"],
+          default: "member",
+        },
+        status: {
+          type: String,
+          enum: ["active", "invited"],
+          default: "active",
+        },
+      },
+    ],
   },
   { timestamps: true }
 );

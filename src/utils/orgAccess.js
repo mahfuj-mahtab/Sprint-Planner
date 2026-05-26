@@ -1,4 +1,5 @@
 import Organization from "../models/organization.models.js";
+import { buildOrgAccess, canManageOrgMembers, canWriteOrgResources } from "./orgRoles.js";
 
 export const getOrgForMember = async (orgId, userId) => {
   const org = await Organization.findById(orgId);
@@ -19,7 +20,8 @@ export const getOrgForMember = async (orgId, userId) => {
     throw err;
   }
 
-  return { org, isOwner };
+  const access = buildOrgAccess(org, userId);
+  return { org, isOwner, role: access.role, access };
 };
 
 export const assertOrgOwner = async (orgId, userId) => {
@@ -30,4 +32,24 @@ export const assertOrgOwner = async (orgId, userId) => {
     throw err;
   }
   return org;
+};
+
+export const assertCanManageOrgMembers = async (orgId, userId) => {
+  const { org, access } = await getOrgForMember(orgId, userId);
+  if (!canManageOrgMembers(access.role)) {
+    const err = new Error("Only owners and admins can manage organization members");
+    err.status = 403;
+    throw err;
+  }
+  return { org, access };
+};
+
+export const assertCanWriteOrg = async (orgId, userId) => {
+  const ctx = await getOrgForMember(orgId, userId);
+  if (!canWriteOrgResources(ctx.access.role)) {
+    const err = new Error("You do not have permission to change this data");
+    err.status = 403;
+    throw err;
+  }
+  return ctx;
 };

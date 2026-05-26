@@ -21,6 +21,11 @@ const organizationSchema = new mongoose.Schema({
             ref: 'User',
             required: true,
         },
+        role: {
+            type: String,
+            enum: ['admin', 'editor', 'viewer'],
+            default: 'viewer',
+        },
         status: {
             type: String,
             enum: ['active', 'pending', 'inactive','banned'],
