@@ -6,6 +6,7 @@ import {
   normalizeForecastPeriods,
   enrichIncomeSource,
   aggregateExpectedEarnings,
+  buildOrgIncomeForecast,
   EXPECTED_EARNING_PERIODS,
 } from "../utils/incomeSourceMetrics.js";
 import {
@@ -89,14 +90,18 @@ export const incomeSourceList = async (req, res) => {
   const { orgId } = req.params;
   try {
     await getOrgForMember(orgId, req.user._id);
-    const sources = await IncomeSource.find({ organization_id: orgId }).sort({ updatedAt: -1 });
+    const sources = await IncomeSource.find({ organization_id: orgId })
+      .populate("project_id", "name")
+      .sort({ updatedAt: -1 });
     const enriched = await Promise.all(sources.map((s) => enrichIncomeSource(s, orgId)));
     const expectedTotals = aggregateExpectedEarnings(enriched);
+    const forecastMatrix = buildOrgIncomeForecast(enriched);
     return res.status(200).json({
       message: "Income sources retrieved",
       success: true,
       sources: enriched,
       expectedTotals,
+      forecastMatrix,
     });
   } catch (error) {
     return handleError(res, error);

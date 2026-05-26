@@ -207,6 +207,114 @@ export const sumActualsForSource = async (sourceId, orgId, plannedInvestment = 0
   };
 };
 
+const monthKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+
+const STARTED_STATUSES = new Set(["started", "working", "live"]);
+
+/** Expand each forecast earning year into 12 calendar months. */
+export const buildSourceMonthlyForecast = (source) => {
+  const doc = source.toObject ? source.toObject() : { ...source };
+  const timeline = buildRevenueTimeline(doc);
+  const months = [];
+
+  for (const period of timeline.periods) {
+    const monthlyAmt =
+      period.monthly_income != null && period.monthly_income > 0
+        ? period.monthly_income
+        : period.yearly_total / 12;
+
+    for (let m = 0; m < 12; m += 1) {
+      const d = new Date(period.period_start);
+      d.setMonth(d.getMonth() + m);
+      const beforeRevenue = d < timeline.revenue_starts_at;
+      months.push({
+        key: monthKey(d),
+        label: d.toLocaleDateString("en-US", { month: "short", year: "numeric" }),
+        calendarYear: d.getFullYear(),
+        calendarMonth: d.getMonth() + 1,
+        amount: beforeRevenue ? 0 : monthlyAmt,
+        earningYear: period.period_index,
+        beforeRevenue,
+      });
+    }
+  }
+
+  const yearTotals = {};
+  for (const row of months) {
+    if (row.beforeRevenue || row.amount <= 0) continue;
+    yearTotals[row.calendarYear] = (yearTotals[row.calendarYear] || 0) + row.amount;
+  }
+
+  return {
+    months,
+    yearTotals,
+    revenue_starts_at: timeline.revenue_starts_at,
+    started_at: timeline.started_at,
+    totalForecast: timeline.total_forecast_revenue,
+    hasStarted: STARTED_STATUSES.has(doc.status),
+  };
+};
+
+/** Org-wide forecast grid: per source rows + column totals by month/year. */
+export const buildOrgIncomeForecast = (sources) => {
+  const rows = sources.map((s) => {
+    const doc = s.toObject ? s.toObject() : { ...s };
+    const project = doc.project_id;
+    const forecast = buildSourceMonthlyForecast(doc);
+    const monthMap = Object.fromEntries(forecast.months.map((m) => [m.key, m.amount]));
+
+    return {
+      sourceId: doc._id?.toString?.() || String(doc._id),
+      name: doc.name,
+      status: doc.status,
+      type: doc.type,
+      currency: (doc.currency || "BDT").trim().toUpperCase(),
+      projectName: project?.name || null,
+      startedAt: forecast.started_at,
+      revenueStartsAt: forecast.revenue_starts_at,
+      revenueStartAfterMonths: Number(doc.revenue_start_after_months) || 0,
+      hasStarted: forecast.hasStarted,
+      actualRevenue: doc.actuals?.total_revenue ?? doc.summary?.total_revenue ?? 0,
+      months: monthMap,
+      yearTotals: forecast.yearTotals,
+      totalForecast: forecast.totalForecast,
+    };
+  });
+
+  const monthKeysSet = new Set();
+  const columnTotals = {};
+  const yearTotals = {};
+
+  for (const row of rows) {
+    for (const [key, amt] of Object.entries(row.months)) {
+      if (amt > 0) monthKeysSet.add(key);
+      columnTotals[key] = (columnTotals[key] || 0) + amt;
+    }
+    for (const [y, amt] of Object.entries(row.yearTotals)) {
+      yearTotals[y] = (yearTotals[y] || 0) + amt;
+    }
+  }
+
+  let monthKeys = [...monthKeysSet].sort();
+
+  if (monthKeys.length > 0) {
+    const [startY, startM] = monthKeys[0].split("-").map(Number);
+    const [endY, endM] = monthKeys[monthKeys.length - 1].split("-").map(Number);
+    const filled = [];
+    const cursor = new Date(startY, startM - 1, 1);
+    const end = new Date(endY, endM - 1, 1);
+    while (cursor <= end) {
+      filled.push(monthKey(cursor));
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+    monthKeys = filled;
+  }
+
+  const years = [...new Set(monthKeys.map((k) => Number(k.split("-")[0])))].sort((a, b) => a - b);
+
+  return { rows, monthKeys, years, columnTotals, yearTotals };
+};
+
 export const enrichIncomeSource = async (source, orgId) => {
   const doc = source.toObject ? source.toObject() : { ...source };
   const timeline = buildRevenueTimeline(doc);
@@ -214,9 +322,12 @@ export const enrichIncomeSource = async (source, orgId) => {
   const planned = Number(doc.planned_investment) || 0;
   const expected_earning = resolveExpectedEarning(doc);
 
+  const monthlyForecast = buildSourceMonthlyForecast(doc);
+
   return {
     ...doc,
     timeline,
+    monthlyForecast,
     actuals,
     expected_earning,
     summary: {

@@ -1,7 +1,19 @@
 import Client from "../models/client.models.js";
+import FinancialAccount from "../models/financialAccount.models.js";
 import IncomeTransaction from "../models/incomeTransaction.models.js";
 import Project from "../models/project.models.js";
 import { CLIENT_STATUSES, STATUS_LABELS, TYPE_LABELS } from "../constants/crmClient.js";
+import { toObjectId } from "./mongoIds.js";
+
+const orgOid = (orgId) => {
+  const oid = toObjectId(orgId);
+  if (!oid) {
+    const err = new Error("Invalid organization id");
+    err.status = 400;
+    throw err;
+  }
+  return oid;
+};
 
 const startOfToday = () => {
   const d = new Date();
@@ -16,15 +28,46 @@ export const isFollowUpDue = (client) => {
 };
 
 export const aggregateRevenueByClient = async (orgId) => {
+  const oid = orgOid(orgId);
   const rows = await IncomeTransaction.aggregate([
-    { $match: { organization_id: orgId, client_id: { $ne: null } } },
+    { $match: { organization_id: oid, client_id: { $ne: null } } },
     { $group: { _id: "$client_id", total: { $sum: "$amount" }, count: { $sum: 1 } } },
   ]);
   const map = {};
   for (const r of rows) {
-    map[r._id.toString()] = { totalPaid: r.total, paymentCount: r.count };
+    if (r._id) map[r._id.toString()] = { totalPaid: r.total, paymentCount: r.count };
   }
   return map;
+};
+
+const sumIncomeAllTime = async (orgId, clientOnly = false) => {
+  const oid = orgOid(orgId);
+  const match = { organization_id: oid };
+  if (clientOnly) match.client_id = { $ne: null };
+  const rows = await IncomeTransaction.aggregate([
+    { $match: match },
+    { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
+  ]);
+  return { total: rows[0]?.total || 0, count: rows[0]?.count || 0 };
+};
+
+/** All-time income totals by currency (same rules as monthly buckets). */
+const sumIncomeAllTimeByCurrency = (incomes, { currencyFor, accountCurrency }) => {
+  const allIncome = {};
+  const clientRevenue = {};
+
+  for (const inc of incomes) {
+    const clientId = inc.client_id?.toString();
+    let cur = "BDT";
+    if (clientId) cur = currencyFor(clientId);
+    else if (inc.account_id) cur = accountCurrency[inc.account_id.toString()] || "BDT";
+
+    const amt = Number(inc.amount) || 0;
+    allIncome[cur] = (allIncome[cur] || 0) + amt;
+    if (clientId) clientRevenue[cur] = (clientRevenue[cur] || 0) + amt;
+  }
+
+  return { allIncome, clientRevenue };
 };
 
 export const buildCrmOverview = async (orgId) => {
@@ -32,7 +75,7 @@ export const buildCrmOverview = async (orgId) => {
     Client.find({ organization_id: orgId }),
     aggregateRevenueByClient(orgId),
     Project.aggregate([
-      { $match: { organization_id: orgId, client_id: { $ne: null } } },
+      { $match: { organization_id: orgOid(orgId), client_id: { $ne: null } } },
       { $group: { _id: "$client_id", count: { $sum: 1 } } },
     ]),
   ]);
@@ -129,10 +172,25 @@ const daysAgo = (n) => {
 const monthLabel = (d) =>
   d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
 
+const buildTrendFromBuckets = (buckets = {}) => {
+  const rows = [];
+  for (let i = 5; i >= 0; i -= 1) {
+    const d = startOfMonth();
+    d.setMonth(d.getMonth() - i);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    rows.push({
+      label: monthLabel(d),
+      amount: buckets[key] || 0,
+    });
+  }
+  return rows;
+};
+
 /** Full CRM dashboard payload for indie client pipeline. */
 export const buildCrmDashboard = async (orgId) => {
+  const oid = orgOid(orgId);
   const overview = await buildCrmOverview(orgId);
-  const clients = await Client.find({ organization_id: orgId }).lean();
+  const clients = await Client.find({ organization_id: oid }).lean();
 
   const clientMap = Object.fromEntries(clients.map((c) => [c._id.toString(), c]));
   const currencyFor = (clientId) => clientMap[clientId]?.currency || "BDT";
@@ -276,30 +334,65 @@ export const buildCrmDashboard = async (orgId) => {
   const sixMonthsAgo = startOfMonth();
   sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 5);
 
-  const incomes = await IncomeTransaction.find({
-    organization_id: orgId,
-    client_id: { $ne: null },
-    payment_date: { $gte: sixMonthsAgo },
-  })
-    .select("amount payment_date client_id")
+  const accountRows = await FinancialAccount.find({ organization_id: oid })
+    .select("_id currency")
     .lean();
+  const accountCurrency = Object.fromEntries(
+    accountRows.map((a) => [a._id.toString(), a.currency || "BDT"])
+  );
+
+  const incomeSelect = "amount payment_date client_id account_id";
+
+  const [clientIncomes, allIncomes, allIncomesEver] = await Promise.all([
+    IncomeTransaction.find({
+      organization_id: oid,
+      client_id: { $ne: null },
+      payment_date: { $gte: sixMonthsAgo },
+    })
+      .select(incomeSelect)
+      .lean(),
+    IncomeTransaction.find({
+      organization_id: oid,
+      payment_date: { $gte: sixMonthsAgo },
+    })
+      .select(incomeSelect)
+      .lean(),
+    IncomeTransaction.find({ organization_id: oid }).select(incomeSelect).lean(),
+  ]);
 
   const revenueThisMonthByCurrency = {};
+  const allIncomeThisMonthByCurrency = {};
   const trendBuckets = {};
+  const allTrendBuckets = {};
 
-  for (const inc of incomes) {
-    const cur = currencyFor(inc.client_id?.toString());
+  const bucketIncome = (inc, buckets, monthBuckets, { useAccountCurrency = false } = {}) => {
+    const clientId = inc.client_id?.toString();
+    let cur = "BDT";
+    if (clientId) cur = currencyFor(clientId);
+    else if (useAccountCurrency && inc.account_id) {
+      cur = accountCurrency[inc.account_id.toString()] || "BDT";
+    }
     const amt = Number(inc.amount) || 0;
     const pd = new Date(inc.payment_date);
 
     if (pd >= monthStart) {
-      revenueThisMonthByCurrency[cur] = (revenueThisMonthByCurrency[cur] || 0) + amt;
+      monthBuckets[cur] = (monthBuckets[cur] || 0) + amt;
     }
 
     const key = `${pd.getFullYear()}-${String(pd.getMonth() + 1).padStart(2, "0")}`;
-    if (!trendBuckets[cur]) trendBuckets[cur] = {};
-    trendBuckets[cur][key] = (trendBuckets[cur][key] || 0) + amt;
+    if (!buckets[cur]) buckets[cur] = {};
+    buckets[cur][key] = (buckets[cur][key] || 0) + amt;
+  };
+
+  for (const inc of clientIncomes) bucketIncome(inc, trendBuckets, revenueThisMonthByCurrency);
+  for (const inc of allIncomes) {
+    bucketIncome(inc, allTrendBuckets, allIncomeThisMonthByCurrency, { useAccountCurrency: true });
   }
+
+  const [clientAllTime, allAllTime] = await Promise.all([
+    sumIncomeAllTime(orgId, true),
+    sumIncomeAllTime(orgId, false),
+  ]);
 
   const buildTrend = (cur) => {
     const buckets = trendBuckets[cur] || {};
@@ -322,9 +415,13 @@ export const buildCrmDashboard = async (orgId) => {
   }));
 
   const primaryCurrency =
+    Object.entries(allIncomeThisMonthByCurrency).sort((a, b) => b[1] - a[1])[0]?.[0] ||
     Object.entries(revenueByCurrency).sort((a, b) => b[1] - a[1])[0]?.[0] ||
     clients[0]?.currency ||
     "BDT";
+
+  const { allIncome: allIncomeAllTimeByCurrency, clientRevenue: clientRevenueAllTimeByCurrency } =
+    sumIncomeAllTimeByCurrency(allIncomesEver, { currencyFor, accountCurrency });
 
   return {
     summary: {
@@ -337,13 +434,31 @@ export const buildCrmDashboard = async (orgId) => {
       highPriorityActive,
       newClientsThisMonth,
     },
-    revenueByCurrency,
+    clientRevenueAllTimeByCurrency,
+    allIncomeAllTimeByCurrency,
+    allIncomeThisMonthByCurrency,
+    revenueByCurrency: clientRevenueAllTimeByCurrency,
     pipelineByCurrency,
-    revenueThisMonthByCurrency,
+    clientRevenueThisMonthByCurrency: revenueThisMonthByCurrency,
+    revenueThisMonthByCurrency: allIncomeThisMonthByCurrency,
     primaryCurrency,
+    incomeStats: {
+      clientAllTime: clientAllTime.total,
+      clientAllTimeCount: clientAllTime.count,
+      allAllTime: allAllTime.total,
+      allAllTimeCount: allAllTime.count,
+      unlinkedAllTime: Math.max(0, allAllTime.total - clientAllTime.total),
+    },
     revenueTrend:
-      revenueTrendByCurrency.find((t) => t.currency === primaryCurrency)?.data ||
-      buildTrend(primaryCurrency),
+      allTrendBuckets[primaryCurrency]
+        ? buildTrendFromBuckets(allTrendBuckets[primaryCurrency])
+        : revenueTrendByCurrency.find((t) => t.currency === primaryCurrency)?.data ||
+          buildTrend(primaryCurrency),
+    clientRevenueTrendByCurrency: revenueTrendByCurrency,
+    allIncomeTrendByCurrency: Object.keys(allTrendBuckets).map((currency) => ({
+      currency,
+      data: buildTrendFromBuckets(allTrendBuckets[currency]),
+    })),
     revenueTrendByCurrency,
     statusChart,
     typeChart,

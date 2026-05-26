@@ -4,9 +4,11 @@ import {
   financeOverview,
   accountList,
   accountCreate,
+  accountUpdate,
   accountDelete,
   partitionCreate,
   partitionUpdate,
+  partitionDelete,
   incomeCreate,
   incomeUpdate,
   incomeDelete,
@@ -43,9 +45,11 @@ const router = Router({ mergeParams: true });
 router.get("/overview", authenticateToken, financeOverview);
 router.get("/accounts", authenticateToken, accountList);
 router.post("/accounts", authenticateToken, accountCreate);
+router.patch("/accounts/:accountId", authenticateToken, accountUpdate);
 router.delete("/accounts/:accountId", authenticateToken, accountDelete);
 router.post("/accounts/:accountId/partitions", authenticateToken, partitionCreate);
 router.patch("/accounts/:accountId/partitions/:partitionId", authenticateToken, partitionUpdate);
+router.delete("/accounts/:accountId/partitions/:partitionId", authenticateToken, partitionDelete);
 
 router.get("/transactions", authenticateToken, transactionList);
 router.post("/income", authenticateToken, incomeCreate);

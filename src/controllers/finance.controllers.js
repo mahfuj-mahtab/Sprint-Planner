@@ -259,6 +259,32 @@ export const accountCreate = async (req, res) => {
   }
 };
 
+export const accountUpdate = async (req, res) => {
+  const { orgId, accountId } = req.params;
+  const { name, type, currency } = req.body;
+
+  try {
+    await getOrgForMember(orgId, req.user._id);
+    const account = await FinancialAccount.findOne({ _id: accountId, organization_id: orgId });
+    if (!account) {
+      return res.status(404).json({ message: "Account not found", success: false });
+    }
+
+    if (name?.trim()) account.name = name.trim();
+    if (type) account.type = type;
+    if (currency?.trim()) account.currency = currency.trim();
+
+    await account.save();
+    return res.status(200).json({ message: "Account updated", success: true, account });
+  } catch (error) {
+    const isDuplicate = error?.code === 11000;
+    if (isDuplicate) {
+      return res.status(409).json({ message: "An account with this name already exists", success: false });
+    }
+    return handleError(res, error);
+  }
+};
+
 export const accountDelete = async (req, res) => {
   const { orgId, accountId } = req.params;
   try {
@@ -335,6 +361,51 @@ export const partitionUpdate = async (req, res) => {
     if (isDuplicate) {
       return res.status(409).json({ message: "A partition with this name already exists in this account", success: false });
     }
+    return handleError(res, error);
+  }
+};
+
+export const partitionDelete = async (req, res) => {
+  const { orgId, accountId, partitionId } = req.params;
+
+  try {
+    await getOrgForMember(orgId, req.user._id);
+    const partition = await Partition.findOne({
+      _id: partitionId,
+      account_id: accountId,
+      organization_id: orgId,
+    });
+    if (!partition) {
+      return res.status(404).json({ message: "Partition not found", success: false });
+    }
+    if (partition.is_default) {
+      return res.status(400).json({ message: "Cannot delete the default partition", success: false });
+    }
+    if (Number(partition.balance) > 0) {
+      return res.status(400).json({
+        message: "Move or spend the balance before deleting this partition",
+        success: false,
+      });
+    }
+
+    const inUse = await IncomeTransaction.exists({
+      organization_id: orgId,
+      "allocations.partition_id": partitionId,
+    });
+    const inUseExpense = await ExpenseTransaction.exists({
+      organization_id: orgId,
+      "allocations.partition_id": partitionId,
+    });
+    if (inUse || inUseExpense) {
+      return res.status(400).json({
+        message: "Partition has transaction history and cannot be deleted",
+        success: false,
+      });
+    }
+
+    await partition.deleteOne();
+    return res.status(200).json({ message: "Partition deleted", success: true });
+  } catch (error) {
     return handleError(res, error);
   }
 };
