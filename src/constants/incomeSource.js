@@ -10,6 +10,8 @@ export const INCOME_SOURCE_STATUSES = [
   "closed",
 ];
 
+export const INCOME_SOURCE_PRIORITIES = ["high", "medium", "low", "later"];
+
 export const TYPE_LABELS = {
   product: "Product",
   client: "Client work",
@@ -26,4 +28,11 @@ export const STATUS_LABELS = {
   hold: "On hold",
   paused: "Paused",
   closed: "Closed",
+};
+
+export const PRIORITY_LABELS = {
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+  later: "Later",
 };

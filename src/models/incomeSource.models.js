@@ -1,5 +1,9 @@
 import mongoose from "mongoose";
-import { INCOME_SOURCE_STATUSES, INCOME_SOURCE_TYPES } from "../constants/incomeSource.js";
+import {
+  INCOME_SOURCE_PRIORITIES,
+  INCOME_SOURCE_STATUSES,
+  INCOME_SOURCE_TYPES,
+} from "../constants/incomeSource.js";
 
 const forecastPeriodSchema = new mongoose.Schema(
   {
@@ -29,6 +33,12 @@ const incomeSourceSchema = new mongoose.Schema(
       type: String,
       enum: INCOME_SOURCE_STATUSES,
       default: "idea",
+      index: true,
+    },
+    priority: {
+      type: String,
+      enum: INCOME_SOURCE_PRIORITIES,
+      default: "medium",
       index: true,
     },
     currency: { type: String, trim: true, default: "BDT" },

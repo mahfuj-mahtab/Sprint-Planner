@@ -10,6 +10,7 @@ import {
   EXPECTED_EARNING_PERIODS,
 } from "../utils/incomeSourceMetrics.js";
 import {
+  INCOME_SOURCE_PRIORITIES,
   INCOME_SOURCE_STATUSES,
   INCOME_SOURCE_TYPES,
 } from "../constants/incomeSource.js";
@@ -39,6 +40,10 @@ const resolveProjectId = async (project_id, orgId) => {
 const parseBody = (body) => {
   const status = INCOME_SOURCE_STATUSES.includes(body.status) ? body.status : undefined;
   const type = INCOME_SOURCE_TYPES.includes(body.type) ? body.type : undefined;
+  const normalizedPriority = String(body.priority || "").toLowerCase();
+  const priority = INCOME_SOURCE_PRIORITIES.includes(normalizedPriority)
+    ? normalizedPriority
+    : undefined;
   const planned_investment =
     body.planned_investment != null && body.planned_investment !== ""
       ? Math.max(0, Number(body.planned_investment))
@@ -71,6 +76,7 @@ const parseBody = (body) => {
     name: body.name?.trim(),
     description: typeof body.description === "string" ? body.description.trim() : undefined,
     status,
+    priority,
     type,
     currency:
       body.currency !== undefined
@@ -150,6 +156,11 @@ export const incomeSourceCreate = async (req, res) => {
         parsed.type ||
         (INCOME_SOURCE_TYPES.includes(req.body.type) ? req.body.type : "other"),
       status: parsed.status || "idea",
+      priority:
+        parsed.priority ||
+        (INCOME_SOURCE_PRIORITIES.includes(String(req.body.priority || "").toLowerCase())
+          ? String(req.body.priority || "").toLowerCase()
+          : "medium"),
       currency: normalizeFinanceCurrency(parsed.currency || req.body.currency, "BDT"),
       planned_investment: parsed.planned_investment ?? 0,
       revenue_start_after_months: parsed.revenue_start_after_months ?? 0,
@@ -200,6 +211,7 @@ export const incomeSourceUpdate = async (req, res) => {
         source.started_at = new Date();
       }
     }
+    if (parsed.priority) source.priority = parsed.priority;
     if (parsed.type) source.type = parsed.type;
     if (parsed.currency) source.currency = parsed.currency;
     if (parsed.planned_investment !== undefined) source.planned_investment = parsed.planned_investment;
