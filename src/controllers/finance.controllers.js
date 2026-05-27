@@ -46,6 +46,13 @@ const monthRange = () => {
   return { start, end };
 };
 
+const yearRange = () => {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), 0, 1);
+  const end = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
+  return { start, end, year: now.getFullYear() };
+};
+
 const attachAccountBalances = async (accounts) => {
   const accountIds = accounts.map((a) => a._id);
   const partitions = await Partition.find({ account_id: { $in: accountIds } });
@@ -163,12 +170,19 @@ export const financeOverview = async (req, res) => {
     const { access } = await getOrgForMember(orgId, req.user._id);
     await ensureDefaultCategories(orgId);
     const { start, end } = monthRange();
+    const { start: yearStart, end: yearEnd, year } = yearRange();
+    const allStart = new Date(1970, 0, 1);
+    const allEnd = new Date(9999, 11, 31, 23, 59, 59, 999);
 
-    const [accounts, businessMonthIncome, businessMonthExpense, activeProjects, partitions] =
+    const [accounts, businessMonthIncome, businessMonthExpense, businessYearIncome, businessYearExpense, businessAllTimeIncome, businessAllTimeExpense, activeProjects, partitions] =
       await Promise.all([
         FinancialAccount.find({ organization_id: orgId }),
         sumBusinessIncomeInRange(orgId, start, end),
         sumBusinessExpenseInRange(orgId, start, end),
+        sumBusinessIncomeInRange(orgId, yearStart, yearEnd),
+        sumBusinessExpenseInRange(orgId, yearStart, yearEnd),
+        sumBusinessIncomeInRange(orgId, allStart, allEnd),
+        sumBusinessExpenseInRange(orgId, allStart, allEnd),
         Project.countDocuments({ organization_id: orgId, status: "active", isArchived: false }),
         getPartitionsByOrg(orgId),
       ]);
@@ -176,6 +190,8 @@ export const financeOverview = async (req, res) => {
     const accountsWithBalances = await attachAccountBalances(accounts);
     const balanceByScope = sumBalancesByScope(partitions);
     const businessNetProfit = businessMonthIncome - businessMonthExpense;
+    const businessYearProfit = businessYearIncome - businessYearExpense;
+    const businessAllTimeProfit = businessAllTimeIncome - businessAllTimeExpense;
 
     return res.status(200).json({
       message: "Finance overview retrieved",
@@ -187,6 +203,13 @@ export const financeOverview = async (req, res) => {
         businessMonthIncome,
         businessMonthExpense,
         businessNetProfit,
+        businessYearIncome,
+        businessYearExpense,
+        businessYearProfit,
+        businessAllTimeIncome,
+        businessAllTimeExpense,
+        businessAllTimeProfit,
+        currentYear: year,
         businessBalance: balanceByScope.business,
         ownerBalance: balanceByScope.owner,
         excludedBalance: balanceByScope.excluded,

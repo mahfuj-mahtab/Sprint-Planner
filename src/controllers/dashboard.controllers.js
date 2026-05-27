@@ -397,6 +397,8 @@ export const orgDashboard = async (req, res) => {
     const monthExpense = businessExpenses
       .filter((e) => e.expense_date >= monthStart && e.expense_date <= monthEnd)
       .reduce((s, e) => s + Number(e.amount), 0);
+    const allTimeIncome = businessIncomes.reduce((s, i) => s + Number(i.businessAmount), 0);
+    const allTimeExpense = businessExpenses.reduce((s, e) => s + Number(e.amount), 0);
 
     const monthlyTrend = months.map((key) => {
       const [y, m] = key.split("-").map(Number);
@@ -496,6 +498,9 @@ export const orgDashboard = async (req, res) => {
           monthIncome,
           monthExpense,
           netProfit: monthIncome - monthExpense,
+          allTimeIncome,
+          allTimeExpense,
+          allTimeProfit: allTimeIncome - allTimeExpense,
           periodLabel: monthStart.toLocaleString("en", { month: "long", year: "numeric" }),
           totalBalance,
           businessBalance: balanceByScope.business,
