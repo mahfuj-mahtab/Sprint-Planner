@@ -39,6 +39,16 @@ import {
   subscriptionChargeNow,
   subscriptionProcessDue,
 } from "../controllers/subscription.controllers.js";
+import {
+  goalList,
+  goalCreate,
+  goalUpdate,
+  goalDelete,
+  goalAddAllocation,
+  goalUpdateAllocation,
+  goalDeleteAllocation,
+  goalSettle,
+} from "../controllers/goal.controllers.js";
 
 const router = Router({ mergeParams: true });
 
@@ -79,5 +89,14 @@ router.patch("/subscriptions/:subscriptionId", authenticateToken, subscriptionUp
 router.delete("/subscriptions/:subscriptionId", authenticateToken, subscriptionDelete);
 router.post("/subscriptions/:subscriptionId/charge", authenticateToken, subscriptionChargeNow);
 router.post("/subscriptions/process-due", authenticateToken, subscriptionProcessDue);
+
+router.get("/goals", authenticateToken, goalList);
+router.post("/goals", authenticateToken, goalCreate);
+router.patch("/goals/:goalId", authenticateToken, goalUpdate);
+router.delete("/goals/:goalId", authenticateToken, goalDelete);
+router.post("/goals/:goalId/allocations", authenticateToken, goalAddAllocation);
+router.patch("/goals/:goalId/allocations/:allocationId", authenticateToken, goalUpdateAllocation);
+router.delete("/goals/:goalId/allocations/:allocationId", authenticateToken, goalDeleteAllocation);
+router.post("/goals/:goalId/settle", authenticateToken, goalSettle);
 
 export default router;
