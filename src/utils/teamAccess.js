@@ -71,6 +71,14 @@ export const buildProjectDeliveryAccess = ({ teams, userId, isOrgOwner, orgAcces
 export const loadProjectTeams = (orgId, projectId) =>
   Team.find({ organization_id: orgId, project_id: projectId }).lean();
 
+export const loadUserProjectTeamIds = async (orgId, userId) => {
+  const teams = await Team.find(
+    { organization_id: orgId, "members.user": userId },
+    { project_id: 1 }
+  ).lean();
+  return new Set((teams || []).map((t) => t.project_id?.toString()).filter(Boolean));
+};
+
 export const getProjectDeliveryAccess = async (orgId, projectId, userId) => {
   const { isOwner, access } = await getOrgForMember(orgId, userId);
   const teams = await loadProjectTeams(orgId, projectId);

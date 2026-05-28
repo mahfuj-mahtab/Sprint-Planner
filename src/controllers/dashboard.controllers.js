@@ -12,6 +12,7 @@ import ExpenseTransaction from "../models/expenseTransaction.models.js";
 import Partition from "../models/partition.models.js";
 import { getOrgForMember } from "../utils/orgAccess.js";
 import { canViewProject } from "../utils/projectAccess.js";
+import { loadUserProjectTeamIds } from "../utils/teamAccess.js";
 import { ensureDefaultCategories } from "./finance.controllers.js";
 import { sumByProjectId } from "../utils/mongoIds.js";
 import {
@@ -115,7 +116,7 @@ export const projectDashboard = async (req, res) => {
   const { orgId, projectId } = req.params;
 
   try {
-    await getOrgForMember(orgId, req.user._id);
+    const { isOwner, access } = await getOrgForMember(orgId, req.user._id);
 
     const project = await Project.findOne({ _id: projectId, organization_id: orgId }).populate(
       "client_id",
@@ -123,6 +124,16 @@ export const projectDashboard = async (req, res) => {
     );
     if (!project) {
       return res.status(404).json({ message: "Project not found", success: false });
+    }
+    const teamProjectIds = await loadUserProjectTeamIds(orgId, req.user._id);
+    if (
+      !canViewProject(project, req.user._id, {
+        isOrgOwner: isOwner,
+        isOrgAdmin: access?.role === "admin",
+        teamProjectIds,
+      })
+    ) {
+      return res.status(403).json({ message: "You do not have access to this project", success: false });
     }
 
     const pid = projectId.toString();
@@ -283,6 +294,7 @@ export const projectDashboard = async (req, res) => {
           monthExpense,
           monthProfit: monthIncome - monthExpense,
         },
+        access,
         counts: {
           sprints: sprints.length,
           activeSprints: sprints.filter((s) => s.isActive).length,

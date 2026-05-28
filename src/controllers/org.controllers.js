@@ -22,6 +22,7 @@ import {
     assertCanWriteProjectDelivery,
     buildProjectDeliveryAccess,
     getProjectDeliveryAccess,
+    loadUserProjectTeamIds,
     loadProjectTeams,
 } from "../utils/teamAccess.js";
 import { buildOrgAccess, normalizeMemberRole } from "../utils/orgRoles.js";
@@ -225,7 +226,7 @@ export const orgGet = async (req, res) => {
     const { orgId } = req.params;
 
     try {
-        const { org, isOwner } = await getOrgForMember(orgId, req.user._id);
+        const { org, isOwner, access } = await getOrgForMember(orgId, req.user._id);
         await org.populate("members.user", "-password");
 
         const defaultProject = await ensureDefaultProjectForOrg(orgId);
@@ -234,7 +235,14 @@ export const orgGet = async (req, res) => {
         const projectsRaw = await Project.find({ organization_id: orgId, isArchived: false })
             .sort({ createdAt: 1 })
             .lean();
-        const visibleRaw = projectsRaw.filter((p) => canViewProject(p, req.user._id, isOwner));
+        const teamProjectIds = await loadUserProjectTeamIds(orgId, req.user._id);
+        const visibleRaw = projectsRaw.filter((p) =>
+            canViewProject(p, req.user._id, {
+                isOrgOwner: isOwner,
+                isOrgAdmin: access?.role === "admin",
+                teamProjectIds,
+            })
+        );
         const projects = await attachCurrentVersionToProjects(visibleRaw, orgId);
 
         const requestedProjectId = req.query?.projectId;
@@ -247,7 +255,13 @@ export const orgGet = async (req, res) => {
             if (!requested) {
                 return res.status(404).json({ message: "Project not found", success: false });
             }
-            if (!canViewProject(requested, req.user._id, isOwner)) {
+            if (
+                !canViewProject(requested, req.user._id, {
+                    isOrgOwner: isOwner,
+                    isOrgAdmin: access?.role === "admin",
+                    teamProjectIds,
+                })
+            ) {
                 return res.status(403).json({ message: "You do not have access to this project", success: false });
             }
             selectedProjectId = requestedProjectId;
@@ -271,19 +285,19 @@ export const orgGet = async (req, res) => {
             });
         }
 
-        const access = buildOrgAccess(org, req.user._id);
+        const accessCtx = buildOrgAccess(org, req.user._id);
         const deliveryAccess = buildProjectDeliveryAccess({
             teams,
             userId: req.user._id,
             isOrgOwner: isOwner,
-            orgAccess: access,
+            orgAccess: accessCtx,
         });
 
         res.status(200).json({
             message: "Organization retrieved successfully",
             success: true,
             organization: org,
-            access,
+            access: accessCtx,
             deliveryAccess,
             projects,
             selectedProjectId,
@@ -465,7 +479,7 @@ export const orgProjectList = async (req, res) => {
     const { orgId } = req.params;
     const { search, status, project_type, archived } = req.query;
     try {
-        const { org, isOwner } = await getOrgForMember(orgId, req.user._id);
+        const { org, isOwner, access } = await getOrgForMember(orgId, req.user._id);
 
         const defaultProject = await ensureDefaultProjectForOrg(orgId);
         await backfillProjectIdsForOrg(orgId, defaultProject._id);
@@ -482,7 +496,14 @@ export const orgProjectList = async (req, res) => {
         }
 
         const allMatching = await Project.find(filter).sort({ createdAt: -1 }).lean();
-        const visible = allMatching.filter((p) => canViewProject(p, req.user._id, isOwner));
+        const teamProjectIds = await loadUserProjectTeamIds(orgId, req.user._id);
+        const visible = allMatching.filter((p) =>
+            canViewProject(p, req.user._id, {
+                isOrgOwner: isOwner,
+                isOrgAdmin: access?.role === "admin",
+                teamProjectIds,
+            })
+        );
 
         const { page, limit, skip } = parseListQuery(req.query, { defaultLimit: 12, maxLimit: 100 });
         const total = visible.length;
@@ -630,12 +651,19 @@ export const orgProjectSprintList = async (req, res) => {
     const { search, active } = req.query;
 
     try {
-        const { isOwner } = await getOrgForMember(orgId, req.user._id);
+        const { isOwner, access } = await getOrgForMember(orgId, req.user._id);
         const project = await Project.findOne({ _id: projectId, organization_id: orgId }).lean();
         if (!project) {
             return res.status(404).json({ message: "Project not found", success: false });
         }
-        if (!canViewProject(project, req.user._id, isOwner)) {
+        const teamProjectIds = await loadUserProjectTeamIds(orgId, req.user._id);
+        if (
+            !canViewProject(project, req.user._id, {
+                isOrgOwner: isOwner,
+                isOrgAdmin: access?.role === "admin",
+                teamProjectIds,
+            })
+        ) {
             return res.status(403).json({ message: "You do not have access to this project", success: false });
         }
 
@@ -677,7 +705,7 @@ export const orgProjectSprintList = async (req, res) => {
 export const orgProjectDetails = async (req, res) => {
     const { orgId, projectId } = req.params;
     try {
-        const { isOwner } = await getOrgForMember(orgId, req.user._id);
+        const { isOwner, access } = await getOrgForMember(orgId, req.user._id);
         const org = await Organization.findById(orgId).populate("members.user", "-password");
         if (!org) {
             return res.status(404).json({ message: "Organization not found", success: false });
@@ -690,7 +718,14 @@ export const orgProjectDetails = async (req, res) => {
         if (!project) {
             return res.status(404).json({ message: "Project not found", success: false });
         }
-        if (!canViewProject(project, req.user._id, isOwner)) {
+        const teamProjectIds = await loadUserProjectTeamIds(orgId, req.user._id);
+        if (
+            !canViewProject(project, req.user._id, {
+                isOrgOwner: isOwner,
+                isOrgAdmin: access?.role === "admin",
+                teamProjectIds,
+            })
+        ) {
             return res.status(403).json({ message: "You do not have access to this project", success: false });
         }
 

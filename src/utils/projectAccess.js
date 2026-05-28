@@ -1,9 +1,21 @@
-/** @returns {boolean} Legacy projects (no members) are visible to all org members. */
-export const canViewProject = (project, userId, isOrgOwner) => {
-  if (isOrgOwner) return true;
+/**
+ * Project visibility policy:
+ * - Org owner/admin can see all projects
+ * - Others can see only projects where they are on at least one project team
+ * - Fallback to legacy project.members check if no team visibility context is passed
+ */
+export const canViewProject = (
+  project,
+  userId,
+  { isOrgOwner = false, isOrgAdmin = false, teamProjectIds = null } = {}
+) => {
+  if (isOrgOwner || isOrgAdmin) return true;
   if (!project) return false;
+  if (teamProjectIds instanceof Set) {
+    return teamProjectIds.has(project._id?.toString?.() || project.toString?.());
+  }
   const members = project.members || [];
-  if (!members.length) return true;
+  if (!members.length) return false;
   return members.some(
     (m) => m.user?.toString() === userId.toString() && (m.status || "active") === "active"
   );
