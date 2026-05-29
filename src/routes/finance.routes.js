@@ -49,6 +49,14 @@ import {
   goalDeleteAllocation,
   goalSettle,
 } from "../controllers/goal.controllers.js";
+import {
+  debtList,
+  debtCreate,
+  debtUpdate,
+  debtDelete,
+  debtRepay,
+  debtRepaymentDelete,
+} from "../controllers/debt.controllers.js";
 
 const router = Router({ mergeParams: true });
 
@@ -98,5 +106,12 @@ router.post("/goals/:goalId/allocations", authenticateToken, goalAddAllocation);
 router.patch("/goals/:goalId/allocations/:allocationId", authenticateToken, goalUpdateAllocation);
 router.delete("/goals/:goalId/allocations/:allocationId", authenticateToken, goalDeleteAllocation);
 router.post("/goals/:goalId/settle", authenticateToken, goalSettle);
+
+router.get("/debts", authenticateToken, debtList);
+router.post("/debts", authenticateToken, debtCreate);
+router.patch("/debts/:debtId", authenticateToken, debtUpdate);
+router.delete("/debts/:debtId", authenticateToken, debtDelete);
+router.post("/debts/:debtId/repayments", authenticateToken, debtRepay);
+router.delete("/debts/:debtId/repayments/:repaymentId", authenticateToken, debtRepaymentDelete);
 
 export default router;

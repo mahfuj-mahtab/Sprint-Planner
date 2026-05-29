@@ -1,5 +1,10 @@
 import Organization from "../models/organization.models.js";
-import { buildOrgAccess, canManageOrgMembers, canWriteOrgResources } from "./orgRoles.js";
+import {
+  buildOrgAccess,
+  canAccessFinance,
+  canManageOrgMembers,
+  canWriteOrgResources,
+} from "./orgRoles.js";
 
 export const getOrgForMember = async (orgId, userId) => {
   const org = await Organization.findById(orgId);
@@ -48,6 +53,16 @@ export const assertCanWriteOrg = async (orgId, userId) => {
   const ctx = await getOrgForMember(orgId, userId);
   if (!canWriteOrgResources(ctx.access.role)) {
     const err = new Error("You do not have permission to change this data");
+    err.status = 403;
+    throw err;
+  }
+  return ctx;
+};
+
+export const assertCanAccessFinance = async (orgId, userId) => {
+  const ctx = await getOrgForMember(orgId, userId);
+  if (!canAccessFinance(ctx.access.role)) {
+    const err = new Error("You do not have permission to view finance data");
     err.status = 403;
     throw err;
   }

@@ -11,7 +11,13 @@ import {
   DEFAULT_SUBSCRIPTION_CATEGORIES,
 } from "../constants/defaultFinanceCategories.js";
 import Subscription from "../models/subscription.models.js";
-import { getOrgForMember, assertCanWriteOrg, assertCanManageOrgMembers } from "../utils/orgAccess.js";
+import {
+  getOrgForMember,
+  assertCanWriteOrg,
+  assertCanManageOrgMembers,
+  assertCanAccessFinance,
+} from "../utils/orgAccess.js";
+import { redactDebtRecord, redactOverviewAmounts } from "../utils/financeRedact.js";
 import { toObjectId, sumByProjectId } from "../utils/mongoIds.js";
 import {
   applyPartitionDelta,
@@ -29,6 +35,8 @@ import {
   sumIncomeAllocationsForScopes,
 } from "../utils/partitionFinance.js";
 import { resolveIncomeSourceId } from "./incomeSource.controllers.js";
+import { sumDebtTotalsByOrg } from "./debt.controllers.js";
+import DebtRecord from "../models/debtRecord.models.js";
 
 const handleError = (res, error) => {
   const status = error.status || 500;
@@ -167,14 +175,14 @@ const resolveIncomeAllocations = async ({ orgId, account_id, amount, allocations
 export const financeOverview = async (req, res) => {
   const { orgId } = req.params;
   try {
-    const { access } = await getOrgForMember(orgId, req.user._id);
+    const { access } = await assertCanAccessFinance(orgId, req.user._id);
     await ensureDefaultCategories(orgId);
     const { start, end } = monthRange();
     const { start: yearStart, end: yearEnd, year } = yearRange();
     const allStart = new Date(1970, 0, 1);
     const allEnd = new Date(9999, 11, 31, 23, 59, 59, 999);
 
-    const [accounts, businessMonthIncome, businessMonthExpense, businessYearIncome, businessYearExpense, businessAllTimeIncome, businessAllTimeExpense, activeProjects, partitions] =
+    const [accounts, businessMonthIncome, businessMonthExpense, businessYearIncome, businessYearExpense, businessAllTimeIncome, businessAllTimeExpense, activeProjects, partitions, debtTotals] =
       await Promise.all([
         FinancialAccount.find({ organization_id: orgId }),
         sumBusinessIncomeInRange(orgId, start, end),
@@ -185,6 +193,7 @@ export const financeOverview = async (req, res) => {
         sumBusinessExpenseInRange(orgId, allStart, allEnd),
         Project.countDocuments({ organization_id: orgId, status: "active", isArchived: false }),
         getPartitionsByOrg(orgId),
+        sumDebtTotalsByOrg(orgId),
       ]);
 
     const accountsWithBalances = await attachAccountBalances(accounts);
@@ -193,10 +202,8 @@ export const financeOverview = async (req, res) => {
     const businessYearProfit = businessYearIncome - businessYearExpense;
     const businessAllTimeProfit = businessAllTimeIncome - businessAllTimeExpense;
 
-    return res.status(200).json({
-      message: "Finance overview retrieved",
-      success: true,
-      overview: {
+    const overview = redactOverviewAmounts(
+      {
         monthIncome: businessMonthIncome,
         monthExpense: businessMonthExpense,
         netProfit: businessNetProfit,
@@ -214,10 +221,20 @@ export const financeOverview = async (req, res) => {
         ownerBalance: balanceByScope.owner,
         excludedBalance: balanceByScope.excluded,
         totalBalance: balanceByScope.all,
+        debtOutstanding: debtTotals.debtOutstanding,
+        debtReceivable: debtTotals.debtReceivable,
+        debtPayable: debtTotals.debtPayable,
         activeProjects,
         accounts: accountsWithBalances,
         access,
       },
+      access.canSeeExactAmounts
+    );
+
+    return res.status(200).json({
+      message: "Finance overview retrieved",
+      success: true,
+      overview,
     });
   } catch (error) {
     return handleError(res, error);
@@ -773,8 +790,8 @@ export const transactionList = async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 100);
 
   try {
-    await getOrgForMember(orgId, req.user._id);
-    const [incomes, expenses, transfers] = await Promise.all([
+    const { access } = await assertCanAccessFinance(orgId, req.user._id);
+    const [incomes, expenses, transfers, debts] = await Promise.all([
       IncomeTransaction.find({ organization_id: orgId })
         .sort({ payment_date: -1 })
         .limit(limit)
@@ -787,6 +804,7 @@ export const transactionList = async (req, res) => {
         .populate("project_id", "name")
         .populate("income_source_id", "name status"),
       PartitionTransfer.find({ organization_id: orgId }).sort({ transfer_date: -1 }).limit(limit),
+      DebtRecord.find({ organization_id: orgId }).sort({ lent_at: -1 }).limit(limit),
     ]);
 
     const partitionIds = new Set();
@@ -804,12 +822,28 @@ export const transactionList = async (req, res) => {
       return obj;
     });
 
+    const debtAccountIds = [...new Set(debts.map((d) => d.account_id?.toString()).filter(Boolean))];
+    const debtPartitionIds = [...new Set(debts.map((d) => d.partition_id?.toString()).filter(Boolean))];
+    const [debtAccounts, debtPartitions] = await Promise.all([
+      FinancialAccount.find({ _id: { $in: debtAccountIds } }).select("name"),
+      Partition.find({ _id: { $in: debtPartitionIds } }).select("name"),
+    ]);
+    const debtAccountNames = Object.fromEntries(debtAccounts.map((a) => [a._id.toString(), a.name]));
+    const debtPartitionNames = Object.fromEntries(debtPartitions.map((p) => [p._id.toString(), p.name]));
+    const debtsEnriched = debts.map((d) => {
+      const obj = d.toObject();
+      obj.account_name = debtAccountNames[d.account_id?.toString()] || "";
+      obj.partition_name = debtPartitionNames[d.partition_id?.toString()] || "";
+      return redactDebtRecord(obj, access.canSeeExactAmounts);
+    });
+
     return res.status(200).json({
       message: "Transactions retrieved",
       success: true,
       incomes,
       expenses,
       transfers: transfersEnriched,
+      debts: debtsEnriched,
     });
   } catch (error) {
     return handleError(res, error);

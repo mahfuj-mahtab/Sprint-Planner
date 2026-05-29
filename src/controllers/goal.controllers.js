@@ -6,6 +6,12 @@ import { effectivePartitionScope } from "../constants/partitionScopes.js";
 import { getOrgForMember, assertCanWriteOrg } from "../utils/orgAccess.js";
 import { assertPartitionInAccount, resolveCategoryName } from "./finance.controllers.js";
 import { applyPartitionDelta, withTransaction } from "../utils/partitionBalance.js";
+import {
+  goalAllocated,
+  goalSettled,
+  goalReserved,
+  getPartitionAvailableBalance,
+} from "../utils/goalReserved.js";
 
 const handleError = (res, error) => {
   const status = error.status || 500;
@@ -13,41 +19,6 @@ const handleError = (res, error) => {
     message: error.message || "Request failed",
     success: false,
   });
-};
-
-const goalAllocated = (goal) =>
-  (goal.allocations || []).reduce((sum, log) => sum + Number(log.amount || 0), 0);
-
-const goalSettled = (goal) =>
-  (goal.settlements || []).reduce((sum, log) => sum + Number(log.amount || 0), 0);
-
-const goalReserved = (goal) => Math.max(0, goalAllocated(goal) - goalSettled(goal));
-
-const reservedByPartition = (goals, opts = {}) => {
-  const { excludeGoalId, excludeAllocationId } = opts;
-  const totals = {};
-  for (const goal of goals || []) {
-    const goalId = goal._id?.toString();
-    if (excludeGoalId && goalId === excludeGoalId) continue;
-    const allocations = (goal.allocations || []).filter(
-      (log) =>
-        log?.partition_id &&
-        (!excludeAllocationId || log._id?.toString() !== excludeAllocationId)
-    );
-    let settledRemaining = goalSettled(goal);
-    for (let i = allocations.length - 1; i >= 0; i -= 1) {
-      const log = allocations[i];
-      const amount = Number(log.amount || 0);
-      if (amount <= 0) continue;
-      const settledHere = Math.min(settledRemaining, amount);
-      settledRemaining -= settledHere;
-      const reservedAmount = amount - settledHere;
-      if (reservedAmount <= 0) continue;
-      const key = log.partition_id.toString();
-      totals[key] = (totals[key] || 0) + reservedAmount;
-    }
-  }
-  return totals;
 };
 
 const serializeGoal = (goal) => {
@@ -225,10 +196,7 @@ export const goalAddAllocation = async (req, res) => {
     const partition = await assertPartitionInAccount(partition_id, account_id, orgId);
     assertGoalScope(goal.type, partition);
     const account = await FinancialAccount.findOne({ _id: account_id, organization_id: orgId });
-    const allGoals = await FinanceGoal.find({ organization_id: orgId });
-    const reservedMap = reservedByPartition(allGoals);
-    const alreadyReserved = Number(reservedMap[partition_id.toString()] || 0);
-    const available = Math.max(0, Number(partition.balance || 0) - alreadyReserved);
+    const { available } = await getPartitionAvailableBalance(partition_id, orgId);
     if (amt > available) {
       return res.status(400).json({
         message: `Not enough free money in this partition. Available: ${available}`,
@@ -272,10 +240,9 @@ export const goalUpdateAllocation = async (req, res) => {
       allocation.account_id,
       orgId
     );
-    const allGoals = await FinanceGoal.find({ organization_id: orgId });
-    const reservedMap = reservedByPartition(allGoals, { excludeAllocationId: allocationId });
-    const alreadyReserved = Number(reservedMap[allocation.partition_id.toString()] || 0);
-    const available = Math.max(0, Number(partition.balance || 0) - alreadyReserved);
+    const { available } = await getPartitionAvailableBalance(allocation.partition_id, orgId, {
+      excludeAllocationId: allocationId,
+    });
     if (amt > available) {
       return res.status(400).json({
         message: `Cannot save. Max allocation is ${available} for this partition.`,

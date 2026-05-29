@@ -17,6 +17,10 @@ export const canSeeExactAmounts = (role) => role === "owner" || role === "admin"
 
 export const canManageOrgMembers = (role) => role === "owner" || role === "admin";
 
+/** Finance tab (viewers cannot access). */
+export const canAccessFinance = (role) =>
+  role === "owner" || role === "admin" || role === "editor";
+
 /** Delivery, CRM, finance writes (viewer is read-only). */
 export const canWriteOrgResources = (role) =>
   role === "owner" || role === "admin" || role === "editor";
@@ -26,6 +30,7 @@ export const buildOrgAccess = (org, userId) => {
   return {
     role,
     canSeeExactAmounts: canSeeExactAmounts(role),
+    canAccessFinance: canAccessFinance(role),
     canManageMembers: canManageOrgMembers(role),
     canWrite: canWriteOrgResources(role),
     isOrgOwner: role === "owner",
