@@ -5,6 +5,7 @@ export const DEFAULT_INCOME_CATEGORIES = [
   "Subscription",
   "Grant",
   "Affiliate",
+  "Investor",
   "Refund",
   "Other income",
 ];

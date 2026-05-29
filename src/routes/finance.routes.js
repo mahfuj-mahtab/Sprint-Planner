@@ -57,6 +57,7 @@ import {
   debtRepay,
   debtRepaymentDelete,
 } from "../controllers/debt.controllers.js";
+import investorRouter from "./investor.routes.js";
 
 const router = Router({ mergeParams: true });
 
@@ -113,5 +114,8 @@ router.patch("/debts/:debtId", authenticateToken, debtUpdate);
 router.delete("/debts/:debtId", authenticateToken, debtDelete);
 router.post("/debts/:debtId/repayments", authenticateToken, debtRepay);
 router.delete("/debts/:debtId/repayments/:repaymentId", authenticateToken, debtRepaymentDelete);
+
+// Investor routes
+router.use("/investors", investorRouter);
 
 export default router;
