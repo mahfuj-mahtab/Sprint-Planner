@@ -53,3 +53,56 @@ export const redactOverviewAmounts = (overview, canSeeExactAmounts) => {
     accounts,
   };
 };
+
+export const redactInvestor = (investor, canSeeExactAmounts) => {
+  if (canSeeExactAmounts || !investor) return investor;
+  return {
+    ...investor,
+    total_invested: null,
+  };
+};
+
+export const redactInvestmentTransaction = (transaction, canSeeExactAmounts) => {
+  if (canSeeExactAmounts || !transaction) return transaction;
+  const doc = transaction.toObject ? transaction.toObject() : transaction;
+  return {
+    ...doc,
+    amount: null,
+    allocations: (doc.allocations || []).map((a) => ({ ...a, amount: null })),
+  };
+};
+
+export const redactInvestorDashboard = (data, canSeeExactAmounts) => {
+  if (canSeeExactAmounts || !data) return data;
+  return {
+    ...data,
+    summary: {
+      ...data.summary,
+      total_raised: null,
+      totals_by_currency: (data.summary?.totals_by_currency || []).map((row) => ({
+        ...row,
+        amount: null,
+      })),
+    },
+    investors: (data.investors || []).map((inv) => ({
+      ...inv,
+      total_invested: null,
+      transactions: (inv.transactions || []).map((tx) => ({ ...tx, amount: null })),
+    })),
+    ownershipSummary: (data.ownershipSummary || []).map((row) => ({
+      ...row,
+      total_invested: null,
+    })),
+  };
+};
+
+export const redactInvestorSummary = (data, canSeeExactAmounts) => {
+  if (canSeeExactAmounts || !data) return data;
+  return {
+    ...data,
+    totalRaised: null,
+    avgInvestment: null,
+    totalsByCurrency: (data.totalsByCurrency || []).map((row) => ({ ...row, amount: null })),
+    topInvestors: (data.topInvestors || []).map((row) => ({ ...row, total_invested: null })),
+  };
+};

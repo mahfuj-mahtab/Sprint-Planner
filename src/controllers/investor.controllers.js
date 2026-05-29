@@ -13,6 +13,12 @@ import {
   validateAllocations,
   withTransaction,
 } from "../utils/partitionBalance.js";
+import {
+  redactInvestor,
+  redactInvestmentTransaction,
+  redactInvestorDashboard,
+  redactInvestorSummary,
+} from "../utils/financeRedact.js";
 
 const handleError = (res, error) => {
   const status = error.status || 500;
@@ -177,6 +183,26 @@ const getCurrencyTotals = (transactions) => {
   };
 };
 
+const assertOwnershipCap = async (orgId, nextPercentage, excludeInvestorId = null) => {
+  const investors = await Investor.find({
+    organization_id: orgId,
+    status: { $ne: "exited" },
+  });
+  let allocated = 0;
+  for (const inv of investors) {
+    if (excludeInvestorId && inv._id.toString() === excludeInvestorId.toString()) continue;
+    allocated += Number(inv.ownership_percentage || 0);
+  }
+  const next = Number(nextPercentage || 0);
+  if (allocated + next > 100.001) {
+    const err = new Error(
+      `Total ownership cannot exceed 100%. Currently ${allocated}% allocated; ${next}% would go over.`
+    );
+    err.status = 400;
+    throw err;
+  }
+};
+
 // ===== INVESTOR CRUD =====
 
 /**
@@ -187,18 +213,19 @@ export const investorList = async (req, res) => {
     const { orgId } = req.params;
     const userId = req.user._id;
 
-    await assertCanWriteOrg(orgId, userId);
+    const { access } = await assertCanAccessFinance(orgId, userId);
 
     const investors = await Investor.find({ organization_id: orgId }).sort({ createdAt: -1 });
     const statsMap = await getInvestorStatsMap(orgId);
-    const investorsWithTotals = investors.map((investor) =>
-      withComputedInvestorTotals(investor, statsMap)
-    );
+    const investorsWithTotals = investors
+      .map((investor) => withComputedInvestorTotals(investor, statsMap))
+      .map((investor) => redactInvestor(investor, access.canSeeExactAmounts));
 
     return res.status(200).json({
       success: true,
       data: investorsWithTotals,
       total: investorsWithTotals.length,
+      access,
     });
   } catch (error) {
     handleError(res, error);
@@ -213,7 +240,7 @@ export const investorGet = async (req, res) => {
     const { orgId, investorId } = req.params;
     const userId = req.user._id;
 
-    await assertCanAccessFinance(orgId, userId);
+    const { access } = await assertCanAccessFinance(orgId, userId);
 
     const investor = await Investor.findOne({
       _id: investorId,
@@ -228,7 +255,6 @@ export const investorGet = async (req, res) => {
     const statsMap = await getInvestorStatsMap(orgId);
     const investorWithTotals = withComputedInvestorTotals(investor, statsMap);
 
-    // Get investment history
     const transactions = await InvestmentTransaction.find({
       investor_id: investorId,
       organization_id: orgId,
@@ -239,9 +265,12 @@ export const investorGet = async (req, res) => {
     return res.status(200).json({
       success: true,
       data: {
-        ...investorWithTotals,
-        transactions,
+        ...redactInvestor(investorWithTotals, access.canSeeExactAmounts),
+        transactions: transactions.map((tx) =>
+          redactInvestmentTransaction(tx, access.canSeeExactAmounts)
+        ),
       },
+      access,
     });
   } catch (error) {
     handleError(res, error);
@@ -259,12 +288,13 @@ export const investorCreate = async (req, res) => {
 
     await assertCanWriteOrg(orgId, userId);
 
-    // Validate ownership percentage
     if (ownership_percentage < 0 || ownership_percentage > 100) {
       const err = new Error("Ownership percentage must be between 0 and 100");
       err.status = 400;
       throw err;
     }
+
+    await assertOwnershipCap(orgId, ownership_percentage);
 
     const investor = new Investor({
       organization_id: orgId,
@@ -317,6 +347,7 @@ export const investorUpdate = async (req, res) => {
         err.status = 400;
         throw err;
       }
+      await assertOwnershipCap(orgId, ownership_percentage, investorId);
       investor.ownership_percentage = ownership_percentage;
     }
 
@@ -408,7 +439,7 @@ export const investmentCreate = async (req, res) => {
       partition_allocations, // Optional: how to allocate across partitions
     } = req.body;
 
-    await assertCanAccessFinance(orgId, userId);
+    await assertCanWriteOrg(orgId, userId);
 
     // Validate investor exists
     const investor = await Investor.findOne({
@@ -605,7 +636,7 @@ export const investmentTransactionList = async (req, res) => {
     const userId = req.user._id;
     const { investor_id, start_date, end_date } = req.query;
 
-    await assertCanAccessFinance(orgId, userId);
+    const { access } = await assertCanAccessFinance(orgId, userId);
 
     const filter = { organization_id: orgId };
 
@@ -626,8 +657,9 @@ export const investmentTransactionList = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      data: transactions,
+      data: transactions.map((tx) => redactInvestmentTransaction(tx, access.canSeeExactAmounts)),
       total: transactions.length,
+      access,
     });
   } catch (error) {
     handleError(res, error);
@@ -683,7 +715,7 @@ export const investorDashboard = async (req, res) => {
     const { orgId } = req.params;
     const userId = req.user._id;
 
-    await assertCanAccessFinance(orgId, userId);
+    const { access } = await assertCanAccessFinance(orgId, userId);
 
     // Get all investors
     const investors = await Investor.find({ organization_id: orgId });
@@ -747,9 +779,8 @@ export const investorDashboard = async (req, res) => {
       0
     );
 
-    return res.status(200).json({
-      success: true,
-      data: {
+    const payload = redactInvestorDashboard(
+      {
         summary: {
           total_raised: totalRaised,
           currency: currencyTotals.primaryCurrency,
@@ -761,6 +792,13 @@ export const investorDashboard = async (req, res) => {
         investors: investorList,
         ownershipSummary,
       },
+      access.canSeeExactAmounts
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: payload,
+      access,
     });
   } catch (error) {
     handleError(res, error);
@@ -775,7 +813,7 @@ export const investorSummary = async (req, res) => {
     const { orgId } = req.params;
     const userId = req.user._id;
 
-    await assertCanAccessFinance(orgId, userId);
+    const { access } = await assertCanAccessFinance(orgId, userId);
 
     const investors = await Investor.find({
       organization_id: orgId,
@@ -808,14 +846,18 @@ export const investorSummary = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      data: {
-        totalRaised,
-        currency: currencyTotals.primaryCurrency,
-        totalsByCurrency: currencyTotals.totalsByCurrency,
-        investorCount,
-        avgInvestment,
-        topInvestors,
-      },
+      data: redactInvestorSummary(
+        {
+          totalRaised,
+          currency: currencyTotals.primaryCurrency,
+          totalsByCurrency: currencyTotals.totalsByCurrency,
+          investorCount,
+          avgInvestment,
+          topInvestors,
+        },
+        access.canSeeExactAmounts
+      ),
+      access,
     });
   } catch (error) {
     handleError(res, error);
