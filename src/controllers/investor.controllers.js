@@ -132,23 +132,35 @@ const getInvestorStatsMap = async (orgId) => {
     {
       $match: {
         organization_id: toObjectId(orgId) || orgId,
-        transaction_type: "investment",
+        transaction_type: { $in: ["investment", "dividend_payment"] },
       },
     },
     {
       $group: {
-        _id: "$investor_id",
-        total_invested: { $sum: "$amount" },
-        investment_count: { $sum: 1 },
+        _id: { investor_id: "$investor_id", type: "$transaction_type" },
+        total: { $sum: "$amount" },
+        count: { $sum: 1 },
       },
     },
   ]);
 
-  return stats.reduce((map, item) => {
-    map[item._id.toString()] = {
-      total_invested: Number(item.total_invested || 0),
-      investment_count: Number(item.investment_count || 0),
-    };
+  return stats.reduce((map, row) => {
+    const investorId = row._id.investor_id.toString();
+    if (!map[investorId]) {
+      map[investorId] = {
+        total_invested: 0,
+        investment_count: 0,
+        total_returned: 0,
+        return_count: 0,
+      };
+    }
+    if (row._id.type === "investment") {
+      map[investorId].total_invested = Number(row.total || 0);
+      map[investorId].investment_count = Number(row.count || 0);
+    } else if (row._id.type === "dividend_payment") {
+      map[investorId].total_returned = Number(row.total || 0);
+      map[investorId].return_count = Number(row.count || 0);
+    }
     return map;
   }, {});
 };
@@ -158,12 +170,20 @@ const withComputedInvestorTotals = (investor, statsMap) => {
   const stats = statsMap[object._id.toString()] || {
     total_invested: 0,
     investment_count: 0,
+    total_returned: 0,
+    return_count: 0,
   };
+
+  const total_invested = stats.total_invested;
+  const total_returned = stats.total_returned;
 
   return {
     ...object,
-    total_invested: stats.total_invested,
+    total_invested,
     investment_count: stats.investment_count,
+    total_returned,
+    return_count: stats.return_count,
+    net_position: total_invested - total_returned,
   };
 };
 
@@ -720,15 +740,22 @@ export const investorDashboard = async (req, res) => {
     // Get all investors
     const investors = await Investor.find({ organization_id: orgId });
 
-    // Get all investment transactions
-    const transactions = await InvestmentTransaction.find({
-      organization_id: orgId,
-      transaction_type: "investment",
-    }).populate("investor_id", "name ownership_percentage");
+    const [investmentTxs, returnTxs] = await Promise.all([
+      InvestmentTransaction.find({
+        organization_id: orgId,
+        transaction_type: "investment",
+      }).populate("investor_id", "name ownership_percentage"),
+      InvestmentTransaction.find({
+        organization_id: orgId,
+        transaction_type: "dividend_payment",
+      }).populate("investor_id", "name ownership_percentage"),
+    ]);
 
-    // Calculate totals
+    const transactions = investmentTxs;
     const currencyTotals = getCurrencyTotals(transactions);
+    const returnTotals = getCurrencyTotals(returnTxs);
     const totalRaised = currencyTotals.primaryTotal;
+    const totalReturned = returnTotals.primaryTotal;
 
     // Group by investor
     const byInvestor = {};
@@ -745,8 +772,24 @@ export const investorDashboard = async (req, res) => {
         status: investor.status,
         total_invested: investorWithTotals.total_invested,
         investment_count: investorWithTotals.investment_count,
+        total_returned: investorWithTotals.total_returned,
+        return_count: investorWithTotals.return_count,
+        net_position: investorWithTotals.net_position,
         transactions: [],
+        returns: [],
       };
+    }
+
+    for (const tx of returnTxs) {
+      const investorId = tx.investor_id?._id?.toString();
+      if (investorId && byInvestor[investorId]) {
+        byInvestor[investorId].returns.push({
+          _id: tx._id,
+          amount: tx.amount,
+          investment_date: tx.investment_date,
+          expense_transaction_id: tx.expense_transaction_id,
+        });
+      }
     }
 
     // Add transactions to investors
@@ -771,6 +814,9 @@ export const investorDashboard = async (req, res) => {
       ownership_percentage: inv.ownership_percentage,
       total_invested: inv.total_invested,
       investment_count: inv.investment_count,
+      total_returned: inv.total_returned,
+      return_count: inv.return_count,
+      net_position: inv.net_position,
     }));
 
     // Sum of ownership percentages (should be <= 100)
@@ -783,8 +829,11 @@ export const investorDashboard = async (req, res) => {
       {
         summary: {
           total_raised: totalRaised,
+          total_returned: totalReturned,
+          net_capital: totalRaised - totalReturned,
           currency: currencyTotals.primaryCurrency,
           totals_by_currency: currencyTotals.totalsByCurrency,
+          returns_by_currency: returnTotals.totalsByCurrency,
           total_investors: investors.length,
           active_investors: investors.filter((i) => i.status === "active").length,
           total_ownership_allocated: totalOwnershipPercentage,
@@ -820,13 +869,21 @@ export const investorSummary = async (req, res) => {
       status: "active",
     });
 
-    const transactions = await InvestmentTransaction.find({
-      organization_id: orgId,
-      transaction_type: "investment",
-    });
+    const [investmentTxs, returnTxs] = await Promise.all([
+      InvestmentTransaction.find({
+        organization_id: orgId,
+        transaction_type: "investment",
+      }),
+      InvestmentTransaction.find({
+        organization_id: orgId,
+        transaction_type: "dividend_payment",
+      }),
+    ]);
 
-    const currencyTotals = getCurrencyTotals(transactions);
+    const currencyTotals = getCurrencyTotals(investmentTxs);
+    const returnTotals = getCurrencyTotals(returnTxs);
     const totalRaised = currencyTotals.primaryTotal;
+    const totalReturned = returnTotals.primaryTotal;
     const investorCount = investors.length;
     const avgInvestment = investorCount > 0 ? totalRaised / investorCount : 0;
 
@@ -841,6 +898,8 @@ export const investorSummary = async (req, res) => {
       .map((inv) => ({
         name: inv.name,
         total_invested: inv.total_invested,
+        total_returned: inv.total_returned,
+        net_position: inv.net_position,
         ownership_percentage: inv.ownership_percentage,
       }));
 
@@ -849,6 +908,8 @@ export const investorSummary = async (req, res) => {
       data: redactInvestorSummary(
         {
           totalRaised,
+          totalReturned,
+          netCapital: totalRaised - totalReturned,
           currency: currencyTotals.primaryCurrency,
           totalsByCurrency: currencyTotals.totalsByCurrency,
           investorCount,

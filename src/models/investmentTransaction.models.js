@@ -33,6 +33,13 @@ const investmentTransactionSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    expense_transaction_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ExpenseTransaction",
+      default: null,
+      index: true,
+      sparse: true,
+    },
     account_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "FinancialAccount",

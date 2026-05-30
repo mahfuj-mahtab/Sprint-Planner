@@ -37,6 +37,11 @@ import {
 import { resolveIncomeSourceId } from "./incomeSource.controllers.js";
 import { sumDebtTotalsByOrg } from "./debt.controllers.js";
 import DebtRecord from "../models/debtRecord.models.js";
+import {
+  assertInvestorInOrg,
+  syncReturnForExpense,
+  deleteReturnForExpense,
+} from "../utils/investorReturns.js";
 
 const handleError = (res, error) => {
   const status = error.status || 500;
@@ -536,6 +541,7 @@ export const expenseCreate = async (req, res) => {
     recurring,
     notes,
     income_source_id,
+    investor_id,
   } = req.body;
 
   const amt = Number(amount);
@@ -545,11 +551,18 @@ export const expenseCreate = async (req, res) => {
   if (!account_id || !partition_id) {
     return res.status(400).json({ message: "Account and partition are required", success: false });
   }
+  if (investor_id && is_personal) {
+    return res.status(400).json({
+      message: "Investor payouts must be business expenses (not personal)",
+      success: false,
+    });
+  }
 
   try {
     await assertCanWriteOrg(orgId, req.user._id);
     const partition = await assertPartitionInAccount(partition_id, account_id, orgId);
     assertExpensePartitionScope(partition, Boolean(is_personal));
+    if (investor_id) await assertInvestorInOrg(investor_id, orgId);
     const categoryName = await resolveCategoryName(orgId, "expense", category);
     const resolvedProjectId = await resolveProjectId(project_id, orgId);
     const resolvedIncomeSourceId = await resolveIncomeSourceId(income_source_id, orgId);
@@ -565,12 +578,22 @@ export const expenseCreate = async (req, res) => {
         category: categoryName,
         project_id: resolvedProjectId,
         income_source_id: resolvedIncomeSourceId,
+        investor_id: investor_id || null,
         expense_date: expense_date ? new Date(expense_date) : new Date(),
         is_personal: Boolean(is_personal),
         recurring: Boolean(recurring),
         notes: (notes || "").trim(),
       });
       await doc.save({ session });
+      if (investor_id) {
+        await syncReturnForExpense({
+          orgId,
+          investorId: investor_id,
+          expense: doc,
+          userId: req.user._id,
+          session,
+        });
+      }
       return doc;
     });
 
@@ -687,7 +710,18 @@ export const expenseUpdate = async (req, res) => {
     const partition = await assertPartitionInAccount(partition_id, account_id, orgId);
     const personalFlag =
       typeof body.is_personal === "boolean" ? body.is_personal : existing.is_personal;
+    const nextInvestorId =
+      body.investor_id !== undefined
+        ? body.investor_id || null
+        : existing.investor_id?.toString() || null;
+    if (nextInvestorId && personalFlag) {
+      return res.status(400).json({
+        message: "Investor payouts must be business expenses (not personal)",
+        success: false,
+      });
+    }
     assertExpensePartitionScope(partition, personalFlag);
+    if (nextInvestorId) await assertInvestorInOrg(nextInvestorId, orgId);
 
     let categoryName = existing.category;
     if (body.category) {
@@ -712,7 +746,17 @@ export const expenseUpdate = async (req, res) => {
       if (typeof body.is_personal === "boolean") existing.is_personal = body.is_personal;
       if (typeof body.recurring === "boolean") existing.recurring = body.recurring;
       if (typeof body.notes === "string") existing.notes = body.notes.trim();
+      if (body.investor_id !== undefined) {
+        existing.investor_id = body.investor_id || null;
+      }
       await existing.save({ session });
+      await syncReturnForExpense({
+        orgId,
+        investorId: existing.investor_id?.toString() || null,
+        expense: existing,
+        userId: req.user._id,
+        session,
+      });
       return existing;
     });
 
@@ -733,6 +777,7 @@ export const expenseDelete = async (req, res) => {
 
     await withTransaction(async (session) => {
       await applyPartitionDelta(existing.partition_id, Number(existing.amount), session);
+      await deleteReturnForExpense(existing._id, session);
       await ExpenseTransaction.deleteOne({ _id: expenseId }, { session });
     });
 
@@ -802,7 +847,8 @@ export const transactionList = async (req, res) => {
         .sort({ expense_date: -1 })
         .limit(limit)
         .populate("project_id", "name")
-        .populate("income_source_id", "name status"),
+        .populate("income_source_id", "name status")
+        .populate("investor_id", "name"),
       PartitionTransfer.find({ organization_id: orgId }).sort({ transfer_date: -1 }).limit(limit),
       DebtRecord.find({ organization_id: orgId }).sort({ lent_at: -1 }).limit(limit),
     ]);
