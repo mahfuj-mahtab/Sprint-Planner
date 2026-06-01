@@ -548,6 +548,11 @@ export const goalCreate = async (req, res) => {
     const data = parseGoalBody(req.body, true);
     if (!data.level) data.level = "annual";
     await assertParentLink(orgId, data.level, data.parent_id, data.year);
+    if (data.level === "long_term" && (!data.project_ids || data.project_ids.length === 0)) {
+      const err = new Error("Long term goals must be linked to a project");
+      err.status = 400;
+      throw err;
+    }
     const goal = await OrgStrategicGoal.create({
       organization_id: orgId,
       ...data,
@@ -577,7 +582,13 @@ export const goalUpdate = async (req, res) => {
     const level = data.level ?? existing.level;
     const parentId = data.parent_id !== undefined ? data.parent_id : existing.parent_id;
     const goalYear = data.year !== undefined ? data.year : existing.year;
+    const projectIds = data.project_ids !== undefined ? data.project_ids : existing.project_ids;
     await assertParentLink(orgId, level, parentId, goalYear);
+    if (level === "long_term" && (!projectIds || projectIds.length === 0)) {
+      const err = new Error("Long term goals must be linked to a project");
+      err.status = 400;
+      throw err;
+    }
     const goal = await OrgStrategicGoal.findOneAndUpdate(
       { _id: goalId, organization_id: orgId },
       { $set: data },
