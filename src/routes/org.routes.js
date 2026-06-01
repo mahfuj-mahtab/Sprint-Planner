@@ -3,12 +3,14 @@ import { orgDashboard, projectDashboard } from "../controllers/dashboard.control
 import { Router } from "express";
 import { authenticateToken } from "../middlewares/auth.middleware.js";
 import learningRouter from "./learning.routes.js";
+import strategyRouter from "./strategy.routes.js";
 
 const router = Router();
 router.get("/fetch/:orgId", authenticateToken, orgGet);
 router.get("/:orgId/dashboard", authenticateToken, orgDashboard);
 router.get("/:orgId/access", authenticateToken, orgAccessGet);
 router.use("/:orgId/learning", learningRouter);
+router.use("/:orgId/strategy", strategyRouter);
 
 router.get("/:orgId/projects", authenticateToken, orgProjectList);
 router.post("/:orgId/projects", authenticateToken, orgProjectCreate);
