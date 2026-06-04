@@ -38,7 +38,7 @@ import {
     assertTaskTransition,
     isTaskDone,
 } from "../utils/taskWorkflow.js";
-import { TASK_TYPES, TASK_PRIORITIES } from "../constants/taskWorkflow.js";
+import { TASK_TYPES, TASK_PRIORITIES, TASK_STATUSES, KANBAN_COLUMNS } from "../constants/taskWorkflow.js";
 
 const serializeTask = (task) => {
     const obj = task.toObject ? task.toObject() : { ...task };
@@ -57,6 +57,39 @@ const assertTaskMutateAccess = (org, task, userId) => {
         err.status = 403;
         throw err;
     }
+};
+
+const assertCanWriteOrgDelivery = async (orgId, userId) => {
+    const { access } = await getOrgForMember(orgId, userId);
+    if (!access?.canWrite) {
+        const err = new Error("Your organization role is view-only.");
+        err.status = 403;
+        throw err;
+    }
+    return access;
+};
+
+const buildOrgTaskQuery = (orgId, sprintId, query = {}) => {
+    const filter = { organization_id: orgId, sprint_id: sprintId };
+    if (query.projectId) filter.project_id = query.projectId;
+    if (query.teamId) filter.team_id = query.teamId;
+    if (query.memberId) filter.assignee = query.memberId;
+    if (query.status) filter.status = resolveTaskStatusForWrite(query.status);
+    return filter;
+};
+
+const populateTaskQuery = (query) =>
+    query
+        .populate("assignee", "fullName email")
+        .populate("team_id", "name project_id")
+        .populate("project_id", "name status project_type")
+        .populate("feature_id", "name");
+
+const serializeBoardTask = (task) => {
+    const obj = serializeTask(task);
+    obj.project = obj.project_id && typeof obj.project_id === "object" ? obj.project_id : null;
+    obj.team = obj.team_id && typeof obj.team_id === "object" ? obj.team_id : null;
+    return obj;
 };
 import User from "../models/users.models.js";
 import Platform, { PlatformStatus } from "../models/platform.models.js";
@@ -697,6 +730,119 @@ export const orgProjectSprintList = async (req, res) => {
         const status = error.status || 500;
         return res.status(status).json({
             message: error.message || "Error fetching sprints",
+            success: false,
+        });
+    }
+};
+
+export const orgSprintList = async (req, res) => {
+    const { orgId } = req.params;
+    const { search, active } = req.query;
+
+    try {
+        await getOrgForMember(orgId, req.user._id);
+        const filter = { organization_id: orgId };
+        if (active === "true") filter.isActive = true;
+        if (active === "false") filter.isActive = false;
+        if (search?.trim()) filter.name = { $regex: search.trim(), $options: "i" };
+
+        const { page, limit, skip } = parseListQuery(req.query, { defaultLimit: 20, maxLimit: 100 });
+        const [total, sprints] = await Promise.all([
+            Sprint.countDocuments(filter),
+            Sprint.find(filter).sort({ isActive: -1, startDate: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+        ]);
+
+        const sprintDetails = [];
+        for (const sprint of sprints) {
+            const tasks = await Task.find({ sprint_id: sprint._id, organization_id: orgId });
+            sprintDetails.push({
+                sprint,
+                total_tasks: tasks.length,
+                completed_tasks: tasks.filter((task) => isTaskDone(task.status)).length,
+            });
+        }
+
+        return res.status(200).json({
+            message: "Sprints fetched successfully",
+            success: true,
+            sprintDetails,
+            pagination: paginationMeta(total, page, limit),
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            message: error.message || "Error fetching organization sprints",
+            success: false,
+        });
+    }
+};
+
+export const orgSprintTaskBoard = async (req, res) => {
+    const { orgId, sprintId } = req.params;
+
+    try {
+        const { isOwner, access } = await getOrgForMember(orgId, req.user._id);
+        const sprint = await Sprint.findOne({ _id: sprintId, organization_id: orgId }).lean();
+        if (!sprint) return res.status(404).json({ message: "Sprint not found", success: false });
+
+        const [projects, teams, tasks] = await Promise.all([
+            Project.find({ organization_id: orgId, isArchived: false }).sort({ name: 1 }).lean(),
+            Team.find({ organization_id: orgId }).populate("members.user", "fullName email").sort({ name: 1 }).lean(),
+            populateTaskQuery(Task.find(buildOrgTaskQuery(orgId, sprintId, req.query)).sort({ updatedAt: -1 })),
+        ]);
+
+        const serializedTasks = tasks.map(serializeBoardTask);
+        const visibleTeamIds = new Set(teams.map((team) => team._id.toString()));
+        const teamsWithTasks = teams
+            .filter((team) => !req.query.projectId || team.project_id?.toString() === req.query.projectId)
+            .filter((team) => !req.query.teamId || team._id.toString() === req.query.teamId)
+            .map((team) => ({
+                ...team,
+                tasks: serializedTasks.filter((task) => task.team_id?._id?.toString() === team._id.toString() || task.team_id?.toString?.() === team._id.toString()),
+                completed_task: serializedTasks.filter((task) => isTaskDone(task.status) && (task.team_id?._id?.toString() === team._id.toString() || task.team_id?.toString?.() === team._id.toString())).length,
+            }));
+
+        const ungroupedTasks = serializedTasks.filter((task) => {
+            const id = task.team_id?._id?.toString() || task.team_id?.toString?.();
+            return id && !visibleTeamIds.has(id);
+        });
+
+        if (ungroupedTasks.length) {
+            teamsWithTasks.push({
+                _id: "unassigned",
+                name: "Filtered tasks",
+                members: [],
+                tasks: ungroupedTasks,
+                completed_task: ungroupedTasks.filter((task) => isTaskDone(task.status)).length,
+            });
+        }
+
+        const deliveryAccess = {
+            canWrite: Boolean(isOwner || access?.canWrite),
+            readOnly: !(isOwner || access?.canWrite),
+            reason: isOwner || access?.canWrite ? null : "Your organization role is view-only.",
+        };
+
+        return res.status(200).json({
+            message: "Task board fetched successfully",
+            success: true,
+            sprint,
+            projects,
+            teams: teamsWithTasks,
+            filters: {
+                projects,
+                teams,
+                members: (await Organization.findById(orgId).populate("members.user", "fullName email").lean())?.members || [],
+            },
+            access,
+            deliveryAccess,
+            workflow: {
+                statuses: TASK_STATUSES,
+                kanbanColumns: KANBAN_COLUMNS,
+            },
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            message: error.message || "Error fetching task board",
             success: false,
         });
     }
@@ -1392,15 +1538,7 @@ export const getSprintDetails = async (req, res) => {
         if (!orgId) {
             return res.status(400).json({ message: "Sprint has no organization" });
         }
-        const defaultProject = orgId ? await ensureDefaultProjectForOrg(orgId) : null;
-        if (orgId && defaultProject) {
-            await backfillProjectIdsForOrg(orgId, defaultProject._id);
-        }
-        const projectId = sprint.project_id || defaultProject?._id;
-        if (!sprint.project_id && projectId) {
-            sprint.project_id = projectId;
-            await sprint.save();
-        }
+        const projectId = sprint.project_id || null;
 
         // 2. Teams of same project
         const teams = await Team.find({
@@ -1425,11 +1563,16 @@ export const getSprintDetails = async (req, res) => {
             ).length,
         }));
 
-        const { access, deliveryAccess } = await getProjectDeliveryAccess(
-            orgId,
-            projectId,
-            req.user._id
-        );
+        const orgCtx = await getOrgForMember(orgId, req.user._id);
+        const projectCtx = projectId
+            ? await getProjectDeliveryAccess(orgId, projectId, req.user._id)
+            : null;
+        const access = projectCtx?.access || orgCtx.access;
+        const deliveryAccess = projectCtx?.deliveryAccess || {
+            canWrite: Boolean(orgCtx.isOwner || orgCtx.access?.canWrite),
+            readOnly: !(orgCtx.isOwner || orgCtx.access?.canWrite),
+            reason: orgCtx.isOwner || orgCtx.access?.canWrite ? null : "Your organization role is view-only.",
+        };
 
         res.status(200).json({
             sprint,
@@ -1437,8 +1580,8 @@ export const getSprintDetails = async (req, res) => {
             access,
             deliveryAccess,
             workflow: {
-                statuses: ["Backlog", "In Progress", "In Review", "Blocked", "Done", "Cancelled"],
-                kanbanColumns: ["Backlog", "In Progress", "In Review", "Blocked", "Done"],
+                statuses: TASK_STATUSES,
+                kanbanColumns: KANBAN_COLUMNS,
             },
         });
 
@@ -1462,17 +1605,19 @@ export const addSprintToOrg = async (req, res) => {
     }
 
     const requestedProjectId = req.params.projectId || req.body.projectId;
-    const defaultProject = await ensureDefaultProjectForOrg(orgId);
-    await backfillProjectIdsForOrg(orgId, defaultProject._id);
-
-    const projectIdToUse = requestedProjectId || defaultProject._id.toString();
-    const project = await Project.findOne({ _id: projectIdToUse, organization_id: orgId });
-    if (!project) {
-        return res.status(404).json({ message: "Project not found", success: false });
-    }
+    let projectIdToUse = null;
 
     try {
-        await assertCanWriteProjectDelivery(orgId, projectIdToUse, req.user._id);
+        if (requestedProjectId) {
+            const project = await Project.findOne({ _id: requestedProjectId, organization_id: orgId });
+            if (!project) {
+                return res.status(404).json({ message: "Project not found", success: false });
+            }
+            projectIdToUse = requestedProjectId;
+            await assertCanWriteProjectDelivery(orgId, projectIdToUse, req.user._id);
+        } else {
+            await assertCanWriteOrgDelivery(orgId, req.user._id);
+        }
         await assertSprintNoOverlap(orgId, projectIdToUse, startDate, endDate);
     } catch (error) {
         return res.status(error.status || 409).json({ message: error.message, success: false });
@@ -1483,7 +1628,7 @@ export const addSprintToOrg = async (req, res) => {
         startDate: startDate,
         endDate: endDate,
         organization_id: orgId,
-        project_id: projectIdToUse,
+        ...(projectIdToUse ? { project_id: projectIdToUse } : {}),
     })
     await sprint.save()
     res.status(201).json({
@@ -1506,12 +1651,8 @@ export const editSprintInOrg = async (req, res) => {
     const nextStart = startDate || sprint.startDate
     const nextEnd = endDate || sprint.endDate
     try {
-        if (!sprint.project_id) {
-            const defaultProject = await ensureDefaultProjectForOrg(orgId);
-            await backfillProjectIdsForOrg(orgId, defaultProject._id);
-            sprint.project_id = defaultProject._id;
-        }
-        await assertCanWriteProjectDelivery(orgId, sprint.project_id, req.user._id);
+        if (sprint.project_id) await assertCanWriteProjectDelivery(orgId, sprint.project_id, req.user._id);
+        else await assertCanWriteOrgDelivery(orgId, req.user._id);
         await assertSprintNoOverlap(orgId, sprint.project_id, nextStart, nextEnd, sprintId);
     } catch (error) {
         return res.status(error.status || 409).json({ message: error.message, success: false });
@@ -1541,11 +1682,8 @@ export const deleteSprint = async (req, res) => {
         })
     }
     try {
-        if (!sprint.project_id) {
-            const defaultProject = await ensureDefaultProjectForOrg(orgId);
-            sprint.project_id = defaultProject._id;
-        }
-        await assertCanWriteProjectDelivery(orgId, sprint.project_id, req.user._id);
+        if (sprint.project_id) await assertCanWriteProjectDelivery(orgId, sprint.project_id, req.user._id);
+        else await assertCanWriteOrgDelivery(orgId, req.user._id);
     } catch (error) {
         return res.status(error.status || 403).json({ message: error.message, success: false });
     }
@@ -1571,16 +1709,11 @@ export const editSprint = async (req, res) => {
     }
     if (name) sprint.name = name
 
-    if (!sprint.project_id) {
-        const defaultProject = await ensureDefaultProjectForOrg(orgId);
-        await backfillProjectIdsForOrg(orgId, defaultProject._id);
-        sprint.project_id = defaultProject._id;
-    }
-
     const nextStart = startDate || sprint.startDate
     const nextEnd = endDate || sprint.endDate
     try {
-        await assertCanWriteProjectDelivery(orgId, sprint.project_id, req.user._id);
+        if (sprint.project_id) await assertCanWriteProjectDelivery(orgId, sprint.project_id, req.user._id);
+        else await assertCanWriteOrgDelivery(orgId, req.user._id);
         await assertSprintNoOverlap(orgId, sprint.project_id, nextStart, nextEnd, sprintId);
     } catch (error) {
         return res.status(error.status || 409).json({ message: error.message, success: false });
@@ -1605,9 +1738,11 @@ export const orgTeamCreate = async (req, res) => {
     }
 
     const requestedProjectId = req.params.projectId || req.body.projectId;
-    const defaultProject = await ensureDefaultProjectForOrg(orgId);
-    await backfillProjectIdsForOrg(orgId, defaultProject._id);
-    const projectIdToUse = requestedProjectId || defaultProject._id.toString();
+    let projectIdToUse = requestedProjectId;
+    if (!projectIdToUse) {
+        const defaultProject = await ensureDefaultProjectForOrg(orgId);
+        projectIdToUse = defaultProject._id.toString();
+    }
     const project = await Project.findOne({ _id: projectIdToUse, organization_id: orgId });
     if (!project) {
         return res.status(404).json({ message: "Project not found", success: false });
@@ -1782,26 +1917,25 @@ export const orgMemberRemoveFromTeam = async (req, res) => {
 }
 export const orgTeamFetchAll = async (req, res) => {
     const { orgId } = req.params
-    const org = await Organization.findById(orgId)
-    if (!org) {
-        return res.status(403).json({
-            message: "Org not found",
-            success: false
-        })
-    }
-    const isMember = org.owner_id.toString() === req.user._id
-    if (!isMember) {
-        return res.status(403).json({
-            message: "You are not authorized to view teams of this organization",
+    try {
+        await getOrgForMember(orgId, req.user._id);
+    } catch (error) {
+        return res.status(error.status || 403).json({
+            message: error.message || "You are not authorized to view teams of this organization",
             success: false
         })
     }
     const requestedProjectId = req.params.projectId || req.query?.projectId;
-    const defaultProject = await ensureDefaultProjectForOrg(orgId);
-    await backfillProjectIdsForOrg(orgId, defaultProject._id);
-    const projectIdToUse = requestedProjectId || defaultProject._id.toString();
+    const filter = { organization_id: orgId };
+    if (requestedProjectId) {
+        const project = await Project.findOne({ _id: requestedProjectId, organization_id: orgId }).lean();
+        if (!project) {
+            return res.status(404).json({ message: "Project not found", success: false });
+        }
+        filter.project_id = requestedProjectId;
+    }
 
-    const teams = await Team.find({ organization_id: orgId, project_id: projectIdToUse }).populate('members.user', '-password')
+    const teams = await Team.find(filter).populate('members.user', '-password')
     res.status(200).json({
         message: "Teams fetched successfully",
         success: true,
@@ -1851,6 +1985,7 @@ export const orgAddTaskToTeamInSprint = async (req, res) => {
         endDate,
         members,
         featureId,
+        projectId,
         task_type,
         blocked_reason,
         acceptance_criteria,
@@ -1862,14 +1997,16 @@ export const orgAddTaskToTeamInSprint = async (req, res) => {
             success: false
         })
     }
-    if (!sprint.project_id) {
-        const defaultProject = await ensureDefaultProjectForOrg(orgId);
-        await backfillProjectIdsForOrg(orgId, defaultProject._id);
-        sprint.project_id = defaultProject._id;
-        await sprint.save();
+    const taskProjectId = projectId || sprint.project_id;
+    if (!taskProjectId) {
+        return res.status(400).json({ message: "Project is required for a task", success: false });
+    }
+    const project = await Project.findOne({ _id: taskProjectId, organization_id: orgId });
+    if (!project) {
+        return res.status(404).json({ message: "Project not found", success: false });
     }
     try {
-        await assertCanWriteProjectDelivery(orgId, sprint.project_id, req.user._id);
+        await assertCanWriteProjectDelivery(orgId, taskProjectId, req.user._id);
     } catch (error) {
         return res.status(error.status || 403).json({ message: error.message, success: false });
     }
@@ -1883,13 +2020,13 @@ export const orgAddTaskToTeamInSprint = async (req, res) => {
             success: false
         })
     }
-    if (teamObj.project_id?.toString() !== sprint.project_id?.toString()) {
+    if (teamObj.project_id?.toString() !== taskProjectId?.toString()) {
         return res.status(400).json({
             message: "Team does not belong to this project",
             success: false,
         });
     }
-    for (const member of members) {
+    for (const member of members || []) {
         const isMemberInTeam = teamObj.members.some(mem => mem.user._id.toString() === member)
         if (!isMemberInTeam) {
             return res.status(400).json({
@@ -1901,7 +2038,7 @@ export const orgAddTaskToTeamInSprint = async (req, res) => {
 
     let featureDoc = null;
     if (featureId) {
-        featureDoc = await Feature.findOne({ _id: featureId, organization_id: orgId, project_id: sprint.project_id });
+        featureDoc = await Feature.findOne({ _id: featureId, organization_id: orgId, project_id: taskProjectId });
         if (!featureDoc) {
             return res.status(400).json({
                 message: "Invalid feature for this project",
@@ -1912,7 +2049,7 @@ export const orgAddTaskToTeamInSprint = async (req, res) => {
     const newTask = new Task({
         title: name,
         description,
-        status: resolveTaskStatusForWrite(status || "Backlog"),
+        status: resolveTaskStatusForWrite(status || "Pending"),
         task_type: TASK_TYPES.includes(task_type) ? task_type : "feature",
         priority: TASK_PRIORITIES.includes(priority) ? priority : "Medium",
         blocked_reason: (blocked_reason || "").trim(),
@@ -1921,11 +2058,11 @@ export const orgAddTaskToTeamInSprint = async (req, res) => {
         endDate,
         sprint_id: sprintId,
         team_id: team,
-        project_id: sprint.project_id,
+        project_id: taskProjectId,
         organization_id: orgId,
         feature_id: featureDoc?._id || null,
     })
-    for (const member of members) {
+    for (const member of members || []) {
         newTask.assignee.push(member)
     }
     await newTask.save()
@@ -1937,17 +2074,11 @@ export const orgAddTaskToTeamInSprint = async (req, res) => {
 }
 export const orgShowSingleTaskInSprint = async (req, res) => {
     const { orgId, sprintId, taskId } = req.params
-    const org = await Organization.findById(orgId)
-    if (!org) {
-        return res.status(403).json({
-            message: "Org not found",
-            success: false
-        })
-    }
-    const isMember = org.owner_id.toString() === req.user._id
-    if (!isMember) {
-        return res.status(403).json({
-            message: "You are not authorized to view task of this organization",
+    try {
+        await getOrgForMember(orgId, req.user._id);
+    } catch (error) {
+        return res.status(error.status || 403).json({
+            message: error.message || "You are not authorized to view task of this organization",
             success: false
         })
     }
@@ -1984,11 +2115,6 @@ export const orgPatchTaskStatus = async (req, res) => {
         if (!sprint) {
             return res.status(404).json({ message: "Sprint not found", success: false });
         }
-        if (!sprint.project_id) {
-            const defaultProject = await ensureDefaultProjectForOrg(orgId);
-            sprint.project_id = defaultProject._id;
-        }
-        await assertCanWriteProjectDelivery(orgId, sprint.project_id, req.user._id);
 
         const task = await Task.findOne({
             _id: taskId,
@@ -1999,6 +2125,8 @@ export const orgPatchTaskStatus = async (req, res) => {
         if (!task) {
             return res.status(404).json({ message: "Task not found", success: false });
         }
+        if (task.project_id) await assertCanWriteProjectDelivery(orgId, task.project_id, req.user._id);
+        else await assertCanWriteOrgDelivery(orgId, req.user._id);
 
         const nextStatus = resolveTaskStatusForWrite(status);
         assertTaskTransition(task.status, nextStatus);
@@ -2038,6 +2166,7 @@ export const orgEditTaskToTeamInSprint = async (req, res) => {
         endDate,
         members,
         featureId,
+        projectId,
         task_type,
         blocked_reason,
         acceptance_criteria,
@@ -2049,14 +2178,27 @@ export const orgEditTaskToTeamInSprint = async (req, res) => {
             success: false
         })
     }
-    if (!sprint.project_id) {
-        const defaultProject = await ensureDefaultProjectForOrg(orgId);
-        await backfillProjectIdsForOrg(orgId, defaultProject._id);
-        sprint.project_id = defaultProject._id;
-        await sprint.save();
+    const task = await Task.findOne({
+        _id: taskId,
+        sprint_id: sprintId,
+        organization_id: orgId
+    })
+    if (!task) {
+        return res.status(404).json({
+            message: "Task not found",
+            success: false
+        })
+    }
+    const taskProjectId = projectId || task.project_id || sprint.project_id;
+    if (!taskProjectId) {
+        return res.status(400).json({ message: "Project is required for a task", success: false });
+    }
+    const project = await Project.findOne({ _id: taskProjectId, organization_id: orgId });
+    if (!project) {
+        return res.status(404).json({ message: "Project not found", success: false });
     }
     try {
-        await assertCanWriteProjectDelivery(orgId, sprint.project_id, req.user._id);
+        await assertCanWriteProjectDelivery(orgId, taskProjectId, req.user._id);
     } catch (error) {
         return res.status(error.status || 403).json({ message: error.message, success: false });
     }
@@ -2070,13 +2212,13 @@ export const orgEditTaskToTeamInSprint = async (req, res) => {
             success: false
         })
     }
-    if (teamObj.project_id?.toString() !== sprint.project_id?.toString()) {
+    if (teamObj.project_id?.toString() !== taskProjectId?.toString()) {
         return res.status(400).json({
             message: "Team does not belong to this project",
             success: false,
         });
     }
-    for (const member of members) {
+    for (const member of members || []) {
         const isMemberInTeam = teamObj.members.some(mem => mem.user._id.toString() === member)
         if (!isMemberInTeam) {
             return res.status(400).json({
@@ -2084,18 +2226,6 @@ export const orgEditTaskToTeamInSprint = async (req, res) => {
                 success: false
             })
         }
-    }
-    const task = await Task.findOne({
-        _id: taskId,
-        sprint_id: sprintId,
-        team_id: team,
-        organization_id: orgId
-    })
-    if (!task) {
-        return res.status(404).json({
-            message: "Task not found",
-            success: false
-        })
     }
     task.title = name || task.title
     task.description = description ?? task.description
@@ -2111,15 +2241,16 @@ export const orgEditTaskToTeamInSprint = async (req, res) => {
     task.startDate = startDate || task.startDate
     task.endDate = endDate || task.endDate
     task.assignee = []
-    for (const member of members) {
+    for (const member of members || []) {
         task.assignee.push(member)
     }
-    task.project_id = sprint.project_id;
+    task.team_id = team;
+    task.project_id = taskProjectId;
 
     if (featureId === "" || featureId === null) {
         task.feature_id = null;
     } else if (typeof featureId === "string" && featureId) {
-        const featureDoc = await Feature.findOne({ _id: featureId, organization_id: orgId, project_id: sprint.project_id });
+        const featureDoc = await Feature.findOne({ _id: featureId, organization_id: orgId, project_id: taskProjectId });
         if (!featureDoc) {
             return res.status(400).json({ message: "Invalid feature for this project", success: false });
         }
@@ -2142,12 +2273,6 @@ export const orgDeleteTaskFromTeamInSprint = async (req, res) => {
             success: false
         })
     }
-    if (!sprint.project_id) {
-        const defaultProject = await ensureDefaultProjectForOrg(orgId);
-        await backfillProjectIdsForOrg(orgId, defaultProject._id);
-        sprint.project_id = defaultProject._id;
-        await sprint.save();
-    }
     const teamObj = await Team.findOne({
         _id: teamId,
         organization_id: orgId
@@ -2157,17 +2282,6 @@ export const orgDeleteTaskFromTeamInSprint = async (req, res) => {
             message: "Team not found",
             success: false
         })
-    }
-    if (teamObj.project_id?.toString() !== sprint.project_id?.toString()) {
-        return res.status(400).json({
-            message: "Team does not belong to this project",
-            success: false,
-        });
-    }
-    try {
-        await assertCanWriteProjectDelivery(orgId, sprint.project_id, req.user._id);
-    } catch (error) {
-        return res.status(error.status || 403).json({ message: error.message, success: false });
     }
     const task = await Task.findOne({
         _id: taskId,
@@ -2180,6 +2294,18 @@ export const orgDeleteTaskFromTeamInSprint = async (req, res) => {
             message: "Task not found",
             success: false
         })
+    }
+    if (task.project_id && teamObj.project_id?.toString() !== task.project_id?.toString()) {
+        return res.status(400).json({
+            message: "Team does not belong to this task project",
+            success: false,
+        });
+    }
+    try {
+        if (task.project_id) await assertCanWriteProjectDelivery(orgId, task.project_id, req.user._id);
+        else await assertCanWriteOrgDelivery(orgId, req.user._id);
+    } catch (error) {
+        return res.status(error.status || 403).json({ message: error.message, success: false });
     }
     await task.deleteOne()
     res.status(201).json({

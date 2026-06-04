@@ -14,7 +14,7 @@ const taskSchema = new mongoose.Schema({
     status: {
         type: String,
         enum: ALL_TASK_STATUSES,
-        default: 'Backlog',
+        default: 'Pending',
     },
     task_type: {
         type: String,

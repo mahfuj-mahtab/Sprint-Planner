@@ -5,7 +5,7 @@ export const assertSprintNoOverlap = async (orgId, projectId, startDate, endDate
   const { start, end } = assertValidRange(startDate, endDate);
   const others = await Sprint.find({
     organization_id: orgId,
-    project_id: projectId,
+    ...(projectId ? { project_id: projectId } : {}),
     ...(excludeSprintId ? { _id: { $ne: excludeSprintId } } : {}),
   });
 

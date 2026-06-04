@@ -1,4 +1,4 @@
-import { addSprintToOrg, deleteSprint, editSprint, getSprintDetails, orgAccessGet, orgAddPlatformInSprint, orgAddPlatformPost, orgAddPlatformStatus, orgAddTaskToTeamInSprint, orgDelete, orgDeleteTaskFromTeamInSprint, orgEditTaskToTeamInSprint, orgPatchTaskStatus, orgFeatureAnalysisSummary, orgFeatureCreate, orgFeatureDelete, orgFeatureEdit, orgFeatureModuleCreate, orgFeatureModuleDelete, orgFeatureModuleEdit, orgGet, orgMemberAdd, orgMemberAddToTeam, orgMemberRemoveFromTeam, orgProjectCreate, orgProjectDelete, orgProjectDetails, orgProjectEdit, orgProjectList, orgProjectSprintList, orgProjectVersionAssignFeature, orgProjectVersionCreate, orgProjectVersionDelete, orgProjectVersionDetails, orgProjectVersionList, orgProjectVersionRemoveFeature, orgProjectVersionUpdate, orgShowPlatformDetails, orgShowSingleTaskInSprint, orgTeamCreate, orgTeamDelete, orgTeamFetchAll, orgTeamFetchOne } from "../controllers/org.controllers.js";
+import { addSprintToOrg, deleteSprint, editSprint, getSprintDetails, orgAccessGet, orgAddPlatformInSprint, orgAddPlatformPost, orgAddPlatformStatus, orgAddTaskToTeamInSprint, orgDelete, orgDeleteTaskFromTeamInSprint, orgEditTaskToTeamInSprint, orgPatchTaskStatus, orgFeatureAnalysisSummary, orgFeatureCreate, orgFeatureDelete, orgFeatureEdit, orgFeatureModuleCreate, orgFeatureModuleDelete, orgFeatureModuleEdit, orgGet, orgMemberAdd, orgMemberAddToTeam, orgMemberRemoveFromTeam, orgProjectCreate, orgProjectDelete, orgProjectDetails, orgProjectEdit, orgProjectList, orgProjectSprintList, orgProjectVersionAssignFeature, orgProjectVersionCreate, orgProjectVersionDelete, orgProjectVersionDetails, orgProjectVersionList, orgProjectVersionRemoveFeature, orgProjectVersionUpdate, orgShowPlatformDetails, orgShowSingleTaskInSprint, orgSprintList, orgSprintTaskBoard, orgTeamCreate, orgTeamDelete, orgTeamFetchAll, orgTeamFetchOne } from "../controllers/org.controllers.js";
 import { orgDashboard, projectDashboard } from "../controllers/dashboard.controllers.js";
 import { Router } from "express";
 import { authenticateToken } from "../middlewares/auth.middleware.js";
@@ -40,6 +40,8 @@ router.delete("/:orgId/projects/:projectId/versions/:versionId/features/:feature
 
 router.post("/add/sprint/:orgId", authenticateToken, addSprintToOrg);
 router.post("/project/:projectId/add/sprint/:orgId", authenticateToken, addSprintToOrg);
+router.get("/:orgId/sprints", authenticateToken, orgSprintList);
+router.get("/:orgId/sprints/:sprintId/board", authenticateToken, orgSprintTaskBoard);
 router.delete("/delete/sprint/:orgId/:sprintId", authenticateToken, deleteSprint);
 router.get("/sprint/details/:sprintId", authenticateToken, getSprintDetails);
 router.patch("/edit/sprint/:orgId/:sprintId", authenticateToken, editSprint);

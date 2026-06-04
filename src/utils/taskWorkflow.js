@@ -6,10 +6,10 @@ import {
 } from "../constants/taskWorkflow.js";
 
 export const normalizeTaskStatus = (status) => {
-  if (!status) return "Backlog";
+  if (!status) return "Pending";
   if (LEGACY_STATUS_MAP[status]) return LEGACY_STATUS_MAP[status];
   if (TASK_STATUSES.includes(status)) return status;
-  return "Backlog";
+  return "Pending";
 };
 
 export const isTaskDone = (status) => {
