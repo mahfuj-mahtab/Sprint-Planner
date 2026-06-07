@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { GOAL_LEVELS, GOAL_STATUSES } from "../constants/strategy.js";
+import { GOAL_PRIORITIES } from "../constants/goal.js";
 
 const keyResultSchema = new mongoose.Schema(
   {
@@ -51,6 +52,12 @@ const orgStrategicGoalSchema = new mongoose.Schema(
       type: String,
       enum: GOAL_STATUSES,
       default: "active",
+    },
+    priority: {
+      type: String,
+      enum: GOAL_PRIORITIES,
+      default: "medium",
+      index: true,
     },
     owner_id: {
       type: mongoose.Schema.Types.ObjectId,

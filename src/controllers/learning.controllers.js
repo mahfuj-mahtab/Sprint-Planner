@@ -2,6 +2,16 @@ import LearningTopic from "../models/learningTopic.models.js";
 import LearningAssignment from "../models/learningAssignment.models.js";
 import User from "../models/users.models.js";
 import { getOrgForMember, assertCanWriteOrg } from "../utils/orgAccess.js";
+import {
+  isValidLearningTopicStatus,
+  normalizeLearningTopicStatus,
+} from "../constants/learningWorkflow.js";
+
+const serializeTopic = (doc) => {
+  const obj = typeof doc.toObject === "function" ? doc.toObject() : { ...doc };
+  obj.status = normalizeLearningTopicStatus(obj.status);
+  return obj;
+};
 
 const handleError = (res, error) => {
   const status = error.status || 500;
@@ -84,7 +94,7 @@ export const learningOverview = async (req, res) => {
     const enrichedTopics = topics.map((t) => {
       const list = byTopic[t._id.toString()] || [];
       return {
-        ...t.toObject(),
+        ...serializeTopic(t),
         assignments: list,
         progress: topicProgress(list),
       };
@@ -95,12 +105,16 @@ export const learningOverview = async (req, res) => {
       (a) => a.user_id?._id?.toString() === req.user._id.toString()
     );
 
+    const normalizedTopics = topics.map(serializeTopic);
+
     return res.status(200).json({
       success: true,
       topics: enrichedTopics,
       summary: {
         topic_count: topics.length,
-        active_topics: topics.filter((t) => t.status === "active").length,
+        active_topics: normalizedTopics.filter((t) =>
+          ["learning", "review"].includes(t.status)
+        ).length,
         assignment_count: allAssignments.length,
         completed_assignments: allAssignments.filter((a) => a.status === "completed").length,
         my_assignments: myAssignments.length,
@@ -128,13 +142,16 @@ export const topicCreate = async (req, res) => {
       organization_id: orgId,
       title: title.trim(),
       description: (description || "").trim(),
-      status: status || "active",
+      status:
+        status && isValidLearningTopicStatus(status)
+          ? normalizeLearningTopicStatus(status)
+          : "pending",
       sort_order: Number(maxOrder?.sort_order || 0) + 1,
       start_date: parseDate(start_date) ?? null,
       due_date: parseDate(due_date) ?? null,
       created_by: req.user._id,
     });
-    return res.status(201).json({ success: true, topic });
+    return res.status(201).json({ success: true, topic: serializeTopic(topic) });
   } catch (error) {
     return handleError(res, error);
   }
@@ -151,11 +168,16 @@ export const topicUpdate = async (req, res) => {
     }
     if (body.title !== undefined) topic.title = String(body.title).trim();
     if (body.description !== undefined) topic.description = String(body.description).trim();
-    if (body.status !== undefined) topic.status = body.status;
+    if (body.status !== undefined) {
+      if (!isValidLearningTopicStatus(body.status)) {
+        return res.status(400).json({ message: "Invalid status", success: false });
+      }
+      topic.status = normalizeLearningTopicStatus(body.status);
+    }
     if (body.start_date !== undefined) topic.start_date = parseDate(body.start_date);
     if (body.due_date !== undefined) topic.due_date = parseDate(body.due_date);
     await topic.save();
-    return res.status(200).json({ success: true, topic });
+    return res.status(200).json({ success: true, topic: serializeTopic(topic) });
   } catch (error) {
     return handleError(res, error);
   }

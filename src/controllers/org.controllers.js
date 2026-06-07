@@ -39,12 +39,27 @@ import {
     isTaskDone,
 } from "../utils/taskWorkflow.js";
 import { TASK_TYPES, TASK_PRIORITIES, TASK_STATUSES, KANBAN_COLUMNS } from "../constants/taskWorkflow.js";
+import {
+    PROJECT_PRIORITIES,
+    PROJECT_STATUSES,
+    isValidProjectStatus,
+    normalizeProjectStatus,
+    PROJECT_PRIORITY_RANK,
+} from "../constants/projectWorkflow.js";
 
 const serializeTask = (task) => {
     const obj = task.toObject ? task.toObject() : { ...task };
     obj.status = normalizeTaskStatus(obj.status);
     return obj;
 };
+
+const serializeProject = (project) => {
+    const obj = project.toObject ? project.toObject() : { ...project };
+    obj.status = normalizeProjectStatus(obj.status);
+    return obj;
+};
+
+const projectPriorityRank = (p) => PROJECT_PRIORITY_RANK[p] ?? 1;
 
 const assertTaskMutateAccess = (org, task, userId) => {
     const isOwner = org.owner_id.toString() === userId.toString();
@@ -520,7 +535,12 @@ export const orgProjectList = async (req, res) => {
         const filter = { organization_id: orgId };
         if (archived === "true") filter.isArchived = true;
         else if (archived !== "all") filter.isArchived = false;
-        if (status && ["active", "paused", "completed"].includes(status)) filter.status = status;
+        if (status && isValidProjectStatus(status)) filter.status = status;
+        else if (status === "in_progress") {
+            filter.status = { $in: ["in_progress", "active"] };
+        } else if (status === "on_hold") {
+            filter.status = { $in: ["on_hold", "paused"] };
+        }
         if (project_type && ["product", "client_work", "internal"].includes(project_type)) {
             filter.project_type = project_type;
         }
@@ -530,13 +550,20 @@ export const orgProjectList = async (req, res) => {
 
         const allMatching = await Project.find(filter).sort({ createdAt: -1 }).lean();
         const teamProjectIds = await loadUserProjectTeamIds(orgId, req.user._id);
-        const visible = allMatching.filter((p) =>
-            canViewProject(p, req.user._id, {
-                isOrgOwner: isOwner,
-                isOrgAdmin: access?.role === "admin",
-                teamProjectIds,
-            })
-        );
+        const visible = allMatching
+            .filter((p) =>
+                canViewProject(p, req.user._id, {
+                    isOrgOwner: isOwner,
+                    isOrgAdmin: access?.role === "admin",
+                    teamProjectIds,
+                })
+            )
+            .map(serializeProject)
+            .sort((a, b) => {
+                const pr = projectPriorityRank(a.priority) - projectPriorityRank(b.priority);
+                if (pr !== 0) return pr;
+                return new Date(b.createdAt) - new Date(a.createdAt);
+            });
 
         const { page, limit, skip } = parseListQuery(req.query, { defaultLimit: 12, maxLimit: 100 });
         const total = visible.length;
@@ -562,14 +589,18 @@ export const orgProjectList = async (req, res) => {
 
 export const orgProjectCreate = async (req, res) => {
     const { orgId } = req.params;
-    const { name, description, documentation, client_id, project_type, status, budget } = req.body;
+    const { name, description, documentation, client_id, project_type, status, budget, priority, start_date, end_date } = req.body;
 
     if (!name) {
         return res.status(400).json({ message: "Project name is required", success: false });
     }
 
     try {
+        await assertCanWriteOrgDelivery(orgId, req.user._id);
         const { org } = await getOrgForMember(orgId, req.user._id);
+
+        const normalizedStatus = status && isValidProjectStatus(status) ? normalizeProjectStatus(status) : "pending";
+        const normalizedPriority = PROJECT_PRIORITIES.includes(priority) ? priority : "medium";
 
         const project = new Project({
             name: name.trim(),
@@ -578,13 +609,16 @@ export const orgProjectCreate = async (req, res) => {
             organization_id: orgId,
             client_id: client_id || null,
             project_type: project_type || "product",
-            status: status || "active",
+            status: normalizedStatus,
+            priority: normalizedPriority,
+            start_date: start_date ? new Date(start_date) : null,
+            end_date: end_date ? new Date(end_date) : null,
             budget: budget != null && budget !== "" ? Number(budget) : null,
             members: buildInitialProjectMembers(req.user._id, org.owner_id),
         });
         await project.save();
 
-        return res.status(201).json({ message: "Project created successfully", success: true, project });
+        return res.status(201).json({ message: "Project created successfully", success: true, project: serializeProject(project) });
     } catch (error) {
         const isDuplicate = error?.code === 11000;
         return res.status(isDuplicate ? 409 : 500).json({
@@ -597,7 +631,19 @@ export const orgProjectCreate = async (req, res) => {
 
 export const orgProjectEdit = async (req, res) => {
     const { orgId, projectId } = req.params;
-    const { name, description, documentation, isArchived, client_id, project_type, status, budget } = req.body;
+    const {
+        name,
+        description,
+        documentation,
+        isArchived,
+        client_id,
+        project_type,
+        status,
+        budget,
+        priority,
+        start_date,
+        end_date,
+    } = req.body;
 
     if (
         !name &&
@@ -607,19 +653,16 @@ export const orgProjectEdit = async (req, res) => {
         client_id === undefined &&
         !project_type &&
         !status &&
-        budget === undefined
+        budget === undefined &&
+        priority === undefined &&
+        start_date === undefined &&
+        end_date === undefined
     ) {
         return res.status(400).json({ message: "Nothing to update", success: false });
     }
 
     try {
-        const org = await Organization.findById(orgId);
-        if (!org) {
-            return res.status(404).json({ message: "Organization not found", success: false });
-        }
-        if (org.owner_id.toString() !== req.user._id) {
-            return res.status(403).json({ message: "You do not have permission to edit projects for this organization", success: false });
-        }
+        await assertCanWriteOrgDelivery(orgId, req.user._id);
 
         const project = await Project.findOne({ _id: projectId, organization_id: orgId });
         if (!project) {
@@ -632,11 +675,16 @@ export const orgProjectEdit = async (req, res) => {
         if (typeof isArchived === "boolean") project.isArchived = isArchived;
         if (client_id !== undefined) project.client_id = client_id || null;
         if (project_type) project.project_type = project_type;
-        if (status) project.status = status;
+        if (status && isValidProjectStatus(status)) project.status = normalizeProjectStatus(status);
+        if (priority !== undefined) {
+            project.priority = PROJECT_PRIORITIES.includes(priority) ? priority : project.priority;
+        }
+        if (start_date !== undefined) project.start_date = start_date ? new Date(start_date) : null;
+        if (end_date !== undefined) project.end_date = end_date ? new Date(end_date) : null;
         if (budget !== undefined) project.budget = budget != null && budget !== "" ? Number(budget) : null;
 
         await project.save();
-        return res.status(200).json({ message: "Project updated successfully", success: true, project });
+        return res.status(200).json({ message: "Project updated successfully", success: true, project: serializeProject(project) });
     } catch (error) {
         const isDuplicate = error?.code === 11000;
         return res.status(isDuplicate ? 409 : 500).json({

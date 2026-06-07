@@ -1,4 +1,13 @@
 import mongoose from "mongoose";
+import {
+  PROJECT_STATUSES,
+  PROJECT_PRIORITIES,
+  LEGACY_PROJECT_STATUS_MAP,
+} from "../constants/projectWorkflow.js";
+
+const ALL_PROJECT_STATUSES = [...PROJECT_STATUSES, ...Object.keys(LEGACY_PROJECT_STATUS_MAP).filter(
+  (s) => !PROJECT_STATUSES.includes(s)
+)];
 
 const projectSchema = new mongoose.Schema(
   {
@@ -36,8 +45,22 @@ const projectSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["active", "paused", "completed"],
-      default: "active",
+      enum: ALL_PROJECT_STATUSES,
+      default: "pending",
+    },
+    priority: {
+      type: String,
+      enum: PROJECT_PRIORITIES,
+      default: "medium",
+      index: true,
+    },
+    start_date: {
+      type: Date,
+      default: null,
+    },
+    end_date: {
+      type: Date,
+      default: null,
     },
     budget: {
       type: Number,

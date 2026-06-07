@@ -15,6 +15,12 @@ import {
   CHECKLIST_CATEGORIES,
   LONG_TERM_LEVELS,
 } from "../constants/strategy.js";
+import { GOAL_PRIORITIES } from "../constants/goal.js";
+
+const goalPriorityRank = (p) => {
+  const idx = GOAL_PRIORITIES.indexOf(p || "medium");
+  return idx === -1 ? 1 : idx;
+};
 
 const handleError = (res, error) => {
   const status = error.status || 500;
@@ -228,12 +234,23 @@ export const strategyOverview = async (req, res) => {
       createdAt: 1,
     });
 
-    const goals = await OrgStrategicGoal.find({ organization_id: orgId })
+    const goalsFetched = await OrgStrategicGoal.find({ organization_id: orgId })
       .populate("owner_id", "name email")
       .populate("pillar_id", "name color")
-      .populate("parent_id", "title level year quarter status")
-      .populate("project_ids", "name status project_type")
-      .sort({ sort_order: 1, year: -1, quarter: -1, createdAt: 1 });
+      .populate("parent_id", "title level year quarter status priority")
+      .populate("project_ids", "name status project_type");
+
+    const goals = [...goalsFetched].sort((a, b) => {
+      const pr = goalPriorityRank(a.priority) - goalPriorityRank(b.priority);
+      if (pr !== 0) return pr;
+      const so = (a.sort_order || 0) - (b.sort_order || 0);
+      if (so !== 0) return so;
+      const y = (b.year || 0) - (a.year || 0);
+      if (y !== 0) return y;
+      const q = (b.quarter || 0) - (a.quarter || 0);
+      if (q !== 0) return q;
+      return new Date(a.createdAt) - new Date(b.createdAt);
+    });
 
     const serializedGoals = attachRollupToGoals(goals.map(serializeGoal));
 
@@ -538,6 +555,15 @@ const parseGoalBody = (body, isCreate = false) => {
   if (body.key_results !== undefined) data.key_results = body.key_results;
   if (body.sort_order !== undefined) data.sort_order = body.sort_order;
   if (body.due_date !== undefined) data.due_date = parseDate(body.due_date);
+  if (body.priority !== undefined) {
+    const p = String(body.priority).toLowerCase();
+    if (!GOAL_PRIORITIES.includes(p)) {
+      const err = new Error("Invalid priority");
+      err.status = 400;
+      throw err;
+    }
+    data.priority = p;
+  }
   return data;
 };
 

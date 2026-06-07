@@ -1,4 +1,13 @@
 import mongoose from "mongoose";
+import {
+  LEARNING_TOPIC_STATUSES,
+  LEGACY_LEARNING_STATUS_MAP,
+} from "../constants/learningWorkflow.js";
+
+const ALL_LEARNING_TOPIC_STATUSES = [
+  ...LEARNING_TOPIC_STATUSES,
+  ...Object.keys(LEGACY_LEARNING_STATUS_MAP).filter((s) => !LEARNING_TOPIC_STATUSES.includes(s)),
+];
 
 const learningTopicSchema = new mongoose.Schema(
   {
@@ -12,8 +21,8 @@ const learningTopicSchema = new mongoose.Schema(
     description: { type: String, trim: true, default: "" },
     status: {
       type: String,
-      enum: ["draft", "active", "archived"],
-      default: "active",
+      enum: ALL_LEARNING_TOPIC_STATUSES,
+      default: "pending",
     },
     sort_order: { type: Number, default: 0 },
     start_date: { type: Date, default: null },
