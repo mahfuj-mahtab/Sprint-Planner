@@ -53,11 +53,19 @@ const clientSchema = new mongoose.Schema(
     next_follow_up: { type: Date, default: null },
     last_contacted_at: { type: Date, default: null },
     communicationLogs: [communicationLogSchema],
+    /** Billing / portal account — child work rolls up to this client (middleman). */
+    parent_client_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Client",
+      default: null,
+      index: true,
+    },
   },
   { timestamps: true }
 );
 
 clientSchema.index({ organization_id: 1, name: 1 });
+clientSchema.index({ organization_id: 1, parent_client_id: 1 });
 clientSchema.index({ organization_id: 1, status: 1 });
 clientSchema.index({ organization_id: 1, next_follow_up: 1 });
 

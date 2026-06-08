@@ -11,6 +11,8 @@ import {
   clientAddLog,
   clientDeleteLog,
   clientSnoozeFollowUp,
+  clientPortalInvite,
+  clientPortalRevoke,
 } from "../controllers/crm.controllers.js";
 
 const router = Router({ mergeParams: true });
@@ -25,5 +27,7 @@ router.delete("/:clientId", authenticateToken, clientDelete);
 router.post("/:clientId/logs", authenticateToken, clientAddLog);
 router.delete("/:clientId/logs/:logId", authenticateToken, clientDeleteLog);
 router.post("/:clientId/follow-up/snooze", authenticateToken, clientSnoozeFollowUp);
+router.post("/:clientId/portal-invite", authenticateToken, clientPortalInvite);
+router.delete("/:clientId/portal-access/:userId", authenticateToken, clientPortalRevoke);
 
 export default router;

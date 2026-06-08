@@ -27,6 +27,13 @@ import {
 } from "../utils/teamAccess.js";
 import { buildOrgAccess, normalizeMemberRole } from "../utils/orgRoles.js";
 import {
+    findBillingClientsByEmail,
+    grantClientPortalAccess,
+    resolveClientPortalAccess,
+    getClientScopeIdsForUser,
+    filterProjectsForClientScope,
+} from "../utils/clientPortal.js";
+import {
     buildInitialProjectMembers,
     canViewProject,
     parseListQuery,
@@ -274,7 +281,20 @@ export const orgGet = async (req, res) => {
     const { orgId } = req.params;
 
     try {
-        const { org, isOwner, access } = await getOrgForMember(orgId, req.user._id);
+        let { org, isOwner, access } = await getOrgForMember(orgId, req.user._id);
+
+        const portalMembership = await resolveClientPortalAccess(
+            org,
+            req.user._id,
+            req.user.email,
+            { sync: true }
+        );
+        let clientScopeIds = null;
+        if (portalMembership) {
+            org = await Organization.findById(orgId);
+            clientScopeIds = await getClientScopeIdsForUser(orgId, org, req.user._id, req.user.email);
+        }
+
         await org.populate("members.user", "-password");
 
         const defaultProject = await ensureDefaultProjectForOrg(orgId);
@@ -284,13 +304,18 @@ export const orgGet = async (req, res) => {
             .sort({ createdAt: 1 })
             .lean();
         const teamProjectIds = await loadUserProjectTeamIds(orgId, req.user._id);
-        const visibleRaw = projectsRaw.filter((p) =>
-            canViewProject(p, req.user._id, {
-                isOrgOwner: isOwner,
-                isOrgAdmin: access?.role === "admin",
-                teamProjectIds,
-            })
-        );
+        let visibleRaw;
+        if (clientScopeIds) {
+            visibleRaw = filterProjectsForClientScope(projectsRaw, clientScopeIds);
+        } else {
+            visibleRaw = projectsRaw.filter((p) =>
+                canViewProject(p, req.user._id, {
+                    isOrgOwner: isOwner,
+                    isOrgAdmin: access?.role === "admin",
+                    teamProjectIds,
+                })
+            );
+        }
         const projects = await attachCurrentVersionToProjects(visibleRaw, orgId);
 
         const requestedProjectId = req.query?.projectId;
@@ -303,13 +328,14 @@ export const orgGet = async (req, res) => {
             if (!requested) {
                 return res.status(404).json({ message: "Project not found", success: false });
             }
-            if (
-                !canViewProject(requested, req.user._id, {
-                    isOrgOwner: isOwner,
-                    isOrgAdmin: access?.role === "admin",
-                    teamProjectIds,
-                })
-            ) {
+            const canAccessRequested = clientScopeIds
+                ? filterProjectsForClientScope([requested], clientScopeIds).length > 0
+                : canViewProject(requested, req.user._id, {
+                      isOrgOwner: isOwner,
+                      isOrgAdmin: access?.role === "admin",
+                      teamProjectIds,
+                  });
+            if (!canAccessRequested) {
                 return res.status(403).json({ message: "You do not have access to this project", success: false });
             }
             selectedProjectId = requestedProjectId;
@@ -334,18 +360,29 @@ export const orgGet = async (req, res) => {
         }
 
         const accessCtx = buildOrgAccess(org, req.user._id);
+        const clientAccess =
+            accessCtx.role === "client" && clientScopeIds
+                ? {
+                      ...accessCtx,
+                      canWrite: false,
+                      canAccessFinance: false,
+                      canManageMembers: false,
+                      isClientPortal: true,
+                      clientScopeIds,
+                  }
+                : accessCtx;
         const deliveryAccess = buildProjectDeliveryAccess({
             teams,
             userId: req.user._id,
             isOrgOwner: isOwner,
-            orgAccess: accessCtx,
+            orgAccess: clientAccess,
         });
 
         res.status(200).json({
             message: "Organization retrieved successfully",
             success: true,
             organization: org,
-            access: accessCtx,
+            access: clientAccess,
             deliveryAccess,
             projects,
             selectedProjectId,
@@ -406,6 +443,15 @@ export const orgMemberAdd = async (req, res) => {
             status: memberStatus,
             role: normalizeMemberRole(role, "viewer"),
         });
+
+        const billingClients = await findBillingClientsByEmail(orgId, user.email);
+        if (billingClients.length) {
+            const added = org.members[org.members.length - 1];
+            added.role = "client";
+            added.client_account_ids = billingClients.map((c) => c._id);
+            added.client_account_id = billingClients[0]._id;
+        }
+
         await org.save();
         await org.populate("members.user", "-password");
 
@@ -529,6 +575,12 @@ export const orgProjectList = async (req, res) => {
     try {
         const { org, isOwner, access } = await getOrgForMember(orgId, req.user._id);
 
+        let clientScopeIds = null;
+        const portalAccess = await resolveClientPortalAccess(org, req.user._id, req.user.email, { sync: true });
+        if (portalAccess) {
+            clientScopeIds = await getClientScopeIdsForUser(orgId, org, req.user._id, req.user.email);
+        }
+
         const defaultProject = await ensureDefaultProjectForOrg(orgId);
         await backfillProjectIdsForOrg(orgId, defaultProject._id);
 
@@ -550,14 +602,19 @@ export const orgProjectList = async (req, res) => {
 
         const allMatching = await Project.find(filter).sort({ createdAt: -1 }).lean();
         const teamProjectIds = await loadUserProjectTeamIds(orgId, req.user._id);
-        const visible = allMatching
-            .filter((p) =>
+        let visible;
+        if (clientScopeIds) {
+            visible = filterProjectsForClientScope(allMatching, clientScopeIds);
+        } else {
+            visible = allMatching.filter((p) =>
                 canViewProject(p, req.user._id, {
                     isOrgOwner: isOwner,
                     isOrgAdmin: access?.role === "admin",
                     teamProjectIds,
                 })
-            )
+            );
+        }
+        visible = visible
             .map(serializeProject)
             .sort((a, b) => {
                 const pr = projectPriorityRank(a.priority) - projectPriorityRank(b.priority);

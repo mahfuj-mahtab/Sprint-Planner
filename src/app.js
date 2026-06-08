@@ -8,6 +8,7 @@ import orgRouter from './routes/org.routes.js';
 import todoRouter from './routes/todo.routes.js';
 import crmRouter from './routes/crm.routes.js';
 import financeRouter from './routes/finance.routes.js';
+import portalRouter from './routes/portal.routes.js';
 const app = express();
 // dotenv.config();
 // Connect to database
@@ -41,6 +42,7 @@ app.use('/api/v1/org', orgRouter);
 app.use('/api/v1/todo', todoRouter);
 app.use('/api/v1/org/:orgId/clients', crmRouter);
 app.use('/api/v1/org/:orgId/finance', financeRouter);
+app.use('/api/v1/portal', portalRouter);
 // Sample route
 app.get('/', (req, res) => {
     res.send('Hello, World!');
