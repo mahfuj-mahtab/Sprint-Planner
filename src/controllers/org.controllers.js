@@ -34,6 +34,7 @@ import {
     repairOrphanParentFeatures,
 } from "../utils/featureTree.js";
 import { parseFeatureImportPayload, importFeatureTree, FEATURE_IMPORT_TEMPLATE, FEATURE_CSV_TEMPLATE } from "../utils/featureImport.js";
+import { findOrCreateFeatureModule, ensureFeatureModuleIndexes } from "../utils/featureModuleStore.js";
 import {
     findBillingClientsByEmail,
     grantClientPortalAccess,
@@ -1081,13 +1082,19 @@ export const orgFeatureModuleCreate = async (req, res) => {
             parent_module_id = parent._id;
         }
 
-        const mod = new FeatureModule({
-            name: name.trim(),
+        const existed = await FeatureModule.exists({
             organization_id: orgId,
             project_id: projectId,
+            name: name.trim(),
             parent_module_id,
         });
-        await mod.save();
+
+        const mod = await findOrCreateFeatureModule(
+            orgId,
+            projectId,
+            name.trim(),
+            parent_module_id
+        );
 
         let movedFeatures = 0;
         if (parent_module_id) {
@@ -1099,12 +1106,18 @@ export const orgFeatureModuleCreate = async (req, res) => {
             );
         }
 
+        const created = !existed;
+
         return res.status(201).json({
             message: parent_module_id
                 ? movedFeatures
                     ? `Sub-module created — ${movedFeatures} feature${movedFeatures === 1 ? "" : "s"} moved here`
-                    : "Sub-module created successfully"
-                : "Module created successfully",
+                    : created
+                      ? "Sub-module created successfully"
+                      : "Sub-module already exists"
+                : created
+                  ? "Module created successfully"
+                  : "Module already exists",
             success: true,
             module: mod,
             movedFeatures,
@@ -1112,8 +1125,10 @@ export const orgFeatureModuleCreate = async (req, res) => {
     } catch (error) {
         const isDuplicate = error?.code === 11000;
         return res.status(isDuplicate ? 409 : 500).json({
-            message: isDuplicate ? "A module with this name already exists" : "Error creating module",
-            error,
+            message: isDuplicate
+                ? "A module with this name already exists at this level. Restart the API server once if you recently updated — stale database indexes may need cleanup."
+                : "Error creating module",
+            error: isDuplicate ? undefined : error,
             success: false,
         });
     }
@@ -1264,12 +1279,30 @@ export const orgFeatureImport = async (req, res) => {
         if (!project) return res.status(404).json({ message: "Project not found", success: false });
 
         const parsed = parseFeatureImportPayload(req.body?.modules ?? req.body);
-        const stats = await importFeatureTree(orgId, projectId, parsed, { mode });
+        let stats;
+        try {
+            stats = await importFeatureTree(orgId, projectId, parsed, { mode });
+        } catch (importError) {
+            if (importError?.code !== 11000) throw importError;
+            await ensureFeatureModuleIndexes();
+            stats = await importFeatureTree(orgId, projectId, parsed, { mode });
+        }
+        const parseMeta = req.body?.importMeta || {};
+
+        const rowsInFile = parseMeta.totalRecords ?? stats.featuresInImport;
+        const rowsParsed = parseMeta.importedRows ?? stats.featuresInImport;
+        const rowsSkipped = parseMeta.skippedRows ?? 0;
+
+        let message = `Imported ${stats.featuresInImport} feature${stats.featuresInImport === 1 ? "" : "s"}`;
+        if (stats.featuresCreated) message += ` (${stats.featuresCreated} new`;
+        if (stats.featuresUpdated) message += stats.featuresCreated ? `, ${stats.featuresUpdated} updated)` : ` (${stats.featuresUpdated} updated)`;
+        else if (stats.featuresCreated) message += ")";
+        if (rowsSkipped > 0) message += `. ${rowsSkipped} spreadsheet row(s) skipped (missing module or feature)`;
 
         return res.status(200).json({
             success: true,
-            message: "Feature tree imported",
-            stats,
+            message,
+            stats: { ...stats, rowsInFile, rowsParsed, rowsSkipped },
         });
     } catch (error) {
         const status = error.status || 500;

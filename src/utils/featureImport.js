@@ -1,6 +1,7 @@
 import FeatureModule from "../models/featureModule.models.js";
 import Feature from "../models/feature.models.js";
 import Task from "../models/task.models.js";
+import { findOrCreateFeatureModule, ensureFeatureModuleIndexes } from "./featureModuleStore.js";
 
 const normalizeName = (value) => String(value || "").trim();
 
@@ -42,7 +43,7 @@ const normalizeModuleInput = (raw) => {
   return { name, subModules, directFeatures };
 };
 
-/** Build module tree from spreadsheet rows. */
+/** Build module tree from spreadsheet rows (with forward-fill). */
 export function parseFeatureImportRows(rows) {
   if (!Array.isArray(rows) || !rows.length) {
     const err = new Error("Import rows must be a non-empty array");
@@ -50,15 +51,21 @@ export function parseFeatureImportRows(rows) {
     throw err;
   }
 
-  const normalized = rows.map((row) => {
-    if (typeof row !== "object" || !row) return null;
-    const module = normalizeName(row.module || row.Module);
-    const sub_module = normalizeName(row.sub_module || row.subModule || row["sub module"] || row.sub);
+  let lastModule = "";
+  let lastSub = "";
+  const normalized = [];
+
+  for (const row of rows) {
+    if (typeof row !== "object" || !row) continue;
+    const module = normalizeName(row.module || row.Module) || lastModule;
+    const sub_module = normalizeName(row.sub_module || row.subModule || row["sub module"] || row.sub) || lastSub;
     const feature = normalizeName(row.feature || row.Feature || row.name);
     const description = normalizeName(row.description || row.details || row.notes);
-    if (!module || !feature) return null;
-    return { module, sub_module, feature, description };
-  }).filter(Boolean);
+    if (module) lastModule = module;
+    if (sub_module) lastSub = sub_module;
+    if (!module || !feature) continue;
+    normalized.push({ module, sub_module, feature, description });
+  }
 
   if (!normalized.length) {
     const err = new Error("No valid rows — each row needs module and feature");
@@ -75,9 +82,23 @@ export function parseFeatureImportRows(rows) {
     subs.get(subName).push({ name: row.feature, description: row.description || "" });
   }
 
+  const dedupeFeatureNames = (features) => {
+    const seen = new Map();
+    return features.map((f) => {
+      const base = f.name.trim();
+      const count = seen.get(base) || 0;
+      seen.set(base, count + 1);
+      if (count === 0) return { ...f, name: base };
+      return { ...f, name: `${base} (${count + 1})` };
+    });
+  };
+
   return Array.from(modules.entries()).map(([name, subs]) => ({
     name,
-    subModules: Array.from(subs.entries()).map(([subName, features]) => ({ name: subName, features })),
+    subModules: Array.from(subs.entries()).map(([subName, features]) => ({
+      name: subName,
+      features: dedupeFeatureNames(features),
+    })),
     directFeatures: [],
   }));
 }
@@ -110,18 +131,7 @@ export const parseFeatureImportPayload = (body) => {
 };
 
 async function findOrCreateModule(orgId, projectId, name, parentModuleId) {
-  const filter = {
-    organization_id: orgId,
-    project_id: projectId,
-    name,
-    parent_module_id: parentModuleId || null,
-  };
-  let mod = await FeatureModule.findOne(filter);
-  if (!mod) {
-    mod = new FeatureModule(filter);
-    await mod.save();
-  }
-  return mod;
+  return findOrCreateFeatureModule(orgId, projectId, name, parentModuleId);
 }
 
 async function findOrCreateFeature(orgId, projectId, moduleId, feat) {
@@ -143,6 +153,8 @@ async function findOrCreateFeature(orgId, projectId, moduleId, feat) {
 }
 
 export async function importFeatureTree(orgId, projectId, parsedModules, { mode = "merge" } = {}) {
+  await ensureFeatureModuleIndexes().catch(() => {});
+
   if (mode === "replace") {
     await Task.updateMany(
       { organization_id: orgId, project_id: projectId, feature_id: { $ne: null } },
@@ -157,6 +169,9 @@ export async function importFeatureTree(orgId, projectId, parsedModules, { mode 
   let modulesCreated = 0;
   let subModulesCreated = 0;
   let featuresCreated = 0;
+  let featuresUpdated = 0;
+  let featuresInImport = 0;
+  let featuresFailed = 0;
 
   for (const modInput of parsedModules) {
     const beforeTop = await FeatureModule.countDocuments({
@@ -168,8 +183,9 @@ export async function importFeatureTree(orgId, projectId, parsedModules, { mode 
     const top = await findOrCreateModule(orgId, projectId, modInput.name, null);
     if (!beforeTop) modulesCreated += 1;
 
-    if (modInput.subModules.length) {
-      for (const subInput of modInput.subModules) {
+    const subModules = modInput.subModules || [];
+    if (subModules.length) {
+      for (const subInput of subModules) {
         const beforeSub = await FeatureModule.countDocuments({
           organization_id: orgId,
           project_id: projectId,
@@ -179,21 +195,28 @@ export async function importFeatureTree(orgId, projectId, parsedModules, { mode 
         const sub = await findOrCreateModule(orgId, projectId, subInput.name, top._id);
         if (!beforeSub) subModulesCreated += 1;
 
-        for (const feat of subInput.features) {
-          const beforeFeat = await Feature.countDocuments({
-            organization_id: orgId,
-            project_id: projectId,
-            module_id: sub._id,
-            name: feat.name,
-          });
-          await findOrCreateFeature(orgId, projectId, sub._id, feat);
-          if (!beforeFeat) featuresCreated += 1;
+        for (const feat of subInput.features || []) {
+          featuresInImport += 1;
+          try {
+            const beforeFeat = await Feature.countDocuments({
+              organization_id: orgId,
+              project_id: projectId,
+              module_id: sub._id,
+              name: feat.name,
+            });
+            await findOrCreateFeature(orgId, projectId, sub._id, feat);
+            if (!beforeFeat) featuresCreated += 1;
+            else featuresUpdated += 1;
+          } catch {
+            featuresFailed += 1;
+          }
         }
       }
     }
 
-    if (modInput.directFeatures.length) {
-      const subName = modInput.subModules.length ? "Other" : "General";
+    const directFeatures = modInput.directFeatures || [];
+    if (directFeatures.length) {
+      const subName = subModules.length ? "Other" : "General";
       const beforeSub = await FeatureModule.countDocuments({
         organization_id: orgId,
         project_id: projectId,
@@ -203,20 +226,33 @@ export async function importFeatureTree(orgId, projectId, parsedModules, { mode 
       const sub = await findOrCreateModule(orgId, projectId, subName, top._id);
       if (!beforeSub) subModulesCreated += 1;
 
-      for (const feat of modInput.directFeatures) {
-        const beforeFeat = await Feature.countDocuments({
-          organization_id: orgId,
-          project_id: projectId,
-          module_id: sub._id,
-          name: feat.name,
-        });
-        await findOrCreateFeature(orgId, projectId, sub._id, feat);
-        if (!beforeFeat) featuresCreated += 1;
+      for (const feat of directFeatures) {
+        featuresInImport += 1;
+        try {
+          const beforeFeat = await Feature.countDocuments({
+            organization_id: orgId,
+            project_id: projectId,
+            module_id: sub._id,
+            name: feat.name,
+          });
+          await findOrCreateFeature(orgId, projectId, sub._id, feat);
+          if (!beforeFeat) featuresCreated += 1;
+          else featuresUpdated += 1;
+        } catch {
+          featuresFailed += 1;
+        }
       }
     }
   }
 
-  return { modulesCreated, subModulesCreated, featuresCreated };
+  return {
+    modulesCreated,
+    subModulesCreated,
+    featuresCreated,
+    featuresUpdated,
+    featuresInImport,
+    featuresFailed,
+  };
 }
 
 export const FEATURE_CSV_TEMPLATE = `module,sub_module,feature,description
