@@ -7,6 +7,11 @@ const featureSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    description: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     organization_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Organization",

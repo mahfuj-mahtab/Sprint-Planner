@@ -19,11 +19,21 @@ const featureModuleSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    /** null = top-level module; set = sub-module under parent. */
+    parent_module_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "FeatureModule",
+      default: null,
+      index: true,
+    },
   },
   { timestamps: true }
 );
 
-featureModuleSchema.index({ organization_id: 1, project_id: 1, name: 1 }, { unique: true });
+featureModuleSchema.index(
+  { organization_id: 1, project_id: 1, parent_module_id: 1, name: 1 },
+  { unique: true }
+);
 
 const FeatureModule = mongoose.model("FeatureModule", featureModuleSchema);
 

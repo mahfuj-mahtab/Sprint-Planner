@@ -25,7 +25,15 @@ import {
     loadUserProjectTeamIds,
     loadProjectTeams,
 } from "../utils/teamAccess.js";
-import { buildOrgAccess, normalizeMemberRole } from "../utils/orgRoles.js";
+import {
+    buildFeatureTree,
+    buildTaskCountsByFeature,
+    assertFeatureTargetIsLeaf,
+    deleteModuleCascade,
+    migrateParentFeaturesToSubModule,
+    repairOrphanParentFeatures,
+} from "../utils/featureTree.js";
+import { parseFeatureImportPayload, importFeatureTree, FEATURE_IMPORT_TEMPLATE } from "../utils/featureImport.js";
 import {
     findBillingClientsByEmail,
     grantClientPortalAccess,
@@ -33,6 +41,7 @@ import {
     getClientScopeIdsForUser,
     filterProjectsForClientScope,
 } from "../utils/clientPortal.js";
+import { buildOrgAccess, normalizeMemberRole } from "../utils/orgRoles.js";
 import {
     buildInitialProjectMembers,
     canViewProject,
@@ -1015,55 +1024,21 @@ export const orgFeatureAnalysisSummary = async (req, res) => {
         const project = await Project.findOne({ _id: projectId, organization_id: orgId });
         if (!project) return res.status(404).json({ message: "Project not found", success: false });
 
-        const modules = await FeatureModule.find({ organization_id: orgId, project_id: projectId }).sort({ createdAt: 1 });
-        const features = await Feature.find({ organization_id: orgId, project_id: projectId }).sort({ createdAt: 1 });
+        let modules = await FeatureModule.find({ organization_id: orgId, project_id: projectId }).sort({ createdAt: 1 });
+        let features = await Feature.find({ organization_id: orgId, project_id: projectId }).sort({ createdAt: 1 });
+
+        const repaired = await repairOrphanParentFeatures(orgId, projectId, modules, features);
+        if (repaired) {
+            features = await Feature.find({ organization_id: orgId, project_id: projectId }).sort({ createdAt: 1 });
+        }
 
         const tasks = await Task.find(
             { organization_id: orgId, project_id: projectId, feature_id: { $ne: null } },
             { feature_id: 1, status: 1 }
         ).lean();
 
-        const taskCountsByFeature = new Map();
-        for (const t of tasks) {
-            const key = t.feature_id?.toString();
-            if (!key) continue;
-            const prev = taskCountsByFeature.get(key) || { totalTasks: 0, completedTasks: 0 };
-            prev.totalTasks += 1;
-            if (isTaskDone(t.status)) prev.completedTasks += 1;
-            taskCountsByFeature.set(key, prev);
-        }
-
-        const featuresByModule = new Map();
-        for (const f of features) {
-            const key = f.module_id.toString();
-            const counts = taskCountsByFeature.get(f._id.toString()) || { totalTasks: 0, completedTasks: 0 };
-            const featureView = {
-                _id: f._id,
-                name: f.name,
-                module_id: f.module_id,
-                totalTasks: counts.totalTasks,
-                completedTasks: counts.completedTasks,
-                status: computeFeatureStatus(counts),
-            };
-            const arr = featuresByModule.get(key) || [];
-            arr.push(featureView);
-            featuresByModule.set(key, arr);
-        }
-
-        const moduleViews = modules.map((m) => {
-            const moduleFeatures = featuresByModule.get(m._id.toString()) || [];
-            const completedFeatures = moduleFeatures.filter(f => f.status === "completed").length;
-            return {
-                _id: m._id,
-                name: m.name,
-                project_id: m.project_id,
-                organization_id: m.organization_id,
-                totalFeatures: moduleFeatures.length,
-                completedFeatures,
-                status: computeModuleStatus(moduleFeatures),
-                features: moduleFeatures,
-            };
-        });
+        const taskCountsByFeature = buildTaskCountsByFeature(tasks);
+        const moduleViews = buildFeatureTree(modules, features, taskCountsByFeature);
 
         return res.status(200).json({
             message: "Feature analysis retrieved successfully",
@@ -1079,7 +1054,7 @@ export const orgFeatureAnalysisSummary = async (req, res) => {
 
 export const orgFeatureModuleCreate = async (req, res) => {
     const { orgId, projectId } = req.params;
-    const { name } = req.body;
+    const { name, parent_module_id: parentModuleId } = req.body;
     if (!name) return res.status(400).json({ message: "Module name is required", success: false });
     try {
         const org = await Organization.findById(orgId);
@@ -1089,9 +1064,51 @@ export const orgFeatureModuleCreate = async (req, res) => {
         const project = await Project.findOne({ _id: projectId, organization_id: orgId });
         if (!project) return res.status(404).json({ message: "Project not found", success: false });
 
-        const mod = new FeatureModule({ name: name.trim(), organization_id: orgId, project_id: projectId });
+        let parent_module_id = null;
+        if (parentModuleId) {
+            const parent = await FeatureModule.findOne({
+                _id: parentModuleId,
+                organization_id: orgId,
+                project_id: projectId,
+                parent_module_id: null,
+            });
+            if (!parent) {
+                return res.status(400).json({
+                    message: "Parent must be a top-level module",
+                    success: false,
+                });
+            }
+            parent_module_id = parent._id;
+        }
+
+        const mod = new FeatureModule({
+            name: name.trim(),
+            organization_id: orgId,
+            project_id: projectId,
+            parent_module_id,
+        });
         await mod.save();
-        return res.status(201).json({ message: "Module created successfully", success: true, module: mod });
+
+        let movedFeatures = 0;
+        if (parent_module_id) {
+            movedFeatures = await migrateParentFeaturesToSubModule(
+                orgId,
+                projectId,
+                parent_module_id,
+                mod._id
+            );
+        }
+
+        return res.status(201).json({
+            message: parent_module_id
+                ? movedFeatures
+                    ? `Sub-module created — ${movedFeatures} feature${movedFeatures === 1 ? "" : "s"} moved here`
+                    : "Sub-module created successfully"
+                : "Module created successfully",
+            success: true,
+            module: mod,
+            movedFeatures,
+        });
     } catch (error) {
         const isDuplicate = error?.code === 11000;
         return res.status(isDuplicate ? 409 : 500).json({
@@ -1136,14 +1153,7 @@ export const orgFeatureModuleDelete = async (req, res) => {
         const mod = await FeatureModule.findOne({ _id: moduleId, organization_id: orgId, project_id: projectId });
         if (!mod) return res.status(404).json({ message: "Module not found", success: false });
 
-        const features = await Feature.find({ organization_id: orgId, project_id: projectId, module_id: moduleId }, { _id: 1 });
-        const featureIds = features.map(f => f._id);
-
-        await Promise.all([
-            Task.updateMany({ organization_id: orgId, project_id: projectId, feature_id: { $in: featureIds } }, { $set: { feature_id: null } }),
-            Feature.deleteMany({ organization_id: orgId, project_id: projectId, module_id: moduleId }),
-        ]);
-        await mod.deleteOne();
+        await deleteModuleCascade(orgId, projectId, moduleId);
 
         return res.status(200).json({ message: "Module deleted successfully", success: true });
     } catch (error) {
@@ -1154,7 +1164,7 @@ export const orgFeatureModuleDelete = async (req, res) => {
 
 export const orgFeatureCreate = async (req, res) => {
     const { orgId, projectId, moduleId } = req.params;
-    const { name } = req.body;
+    const { name, description } = req.body;
     if (!name) return res.status(400).json({ message: "Feature name is required", success: false });
     try {
         const org = await Organization.findById(orgId);
@@ -1163,9 +1173,11 @@ export const orgFeatureCreate = async (req, res) => {
 
         const mod = await FeatureModule.findOne({ _id: moduleId, organization_id: orgId, project_id: projectId });
         if (!mod) return res.status(404).json({ message: "Module not found", success: false });
+        await assertFeatureTargetIsLeaf(orgId, projectId, moduleId);
 
         const feat = new Feature({
             name: name.trim(),
+            description: (description || "").trim(),
             organization_id: orgId,
             project_id: projectId,
             module_id: moduleId,
@@ -1184,8 +1196,10 @@ export const orgFeatureCreate = async (req, res) => {
 
 export const orgFeatureEdit = async (req, res) => {
     const { orgId, projectId, featureId } = req.params;
-    const { name, moduleId } = req.body;
-    if (!name && !moduleId) return res.status(400).json({ message: "Nothing to update", success: false });
+    const { name, moduleId, description } = req.body;
+    if (!name && !moduleId && description === undefined) {
+        return res.status(400).json({ message: "Nothing to update", success: false });
+    }
     try {
         const org = await Organization.findById(orgId);
         if (!org) return res.status(404).json({ message: "Organization not found", success: false });
@@ -1197,9 +1211,11 @@ export const orgFeatureEdit = async (req, res) => {
         if (moduleId) {
             const mod = await FeatureModule.findOne({ _id: moduleId, organization_id: orgId, project_id: projectId });
             if (!mod) return res.status(404).json({ message: "Module not found", success: false });
+            await assertFeatureTargetIsLeaf(orgId, projectId, moduleId);
             feat.module_id = moduleId;
         }
         if (name) feat.name = name.trim();
+        if (description !== undefined) feat.description = String(description || "").trim();
 
         await feat.save();
         return res.status(200).json({ message: "Feature updated successfully", success: true, feature: feat });
@@ -1233,6 +1249,39 @@ export const orgFeatureDelete = async (req, res) => {
         if (error?.message === "FORBIDDEN") return res.status(403).json({ message: "You do not have permission", success: false });
         return res.status(500).json({ message: "Error deleting feature", error, success: false });
     }
+};
+
+export const orgFeatureImport = async (req, res) => {
+    const { orgId, projectId } = req.params;
+    const mode = req.body?.mode === "replace" ? "replace" : "merge";
+
+    try {
+        const org = await Organization.findById(orgId);
+        if (!org) return res.status(404).json({ message: "Organization not found", success: false });
+        await assertCanWriteProjectDelivery(orgId, projectId, req.user._id);
+
+        const project = await Project.findOne({ _id: projectId, organization_id: orgId });
+        if (!project) return res.status(404).json({ message: "Project not found", success: false });
+
+        const parsed = parseFeatureImportPayload(req.body?.modules ?? req.body);
+        const stats = await importFeatureTree(orgId, projectId, parsed, { mode });
+
+        return res.status(200).json({
+            success: true,
+            message: "Feature tree imported",
+            stats,
+        });
+    } catch (error) {
+        const status = error.status || 500;
+        return res.status(status).json({
+            message: error.message || "Import failed",
+            success: false,
+        });
+    }
+};
+
+export const orgFeatureImportTemplate = async (_req, res) => {
+    return res.status(200).json({ success: true, template: FEATURE_IMPORT_TEMPLATE });
 };
 
 export const orgProjectVersionList = async (req, res) => {
@@ -1477,53 +1526,27 @@ export const orgProjectVersionDetails = async (req, res) => {
         }
 
         const features = await Feature.find({ _id: { $in: featureIds }, organization_id: orgId, project_id: projectId }).sort({ createdAt: 1 });
-        const moduleIds = [...new Set(features.map((f) => f.module_id.toString()))];
-        const modules = await FeatureModule.find({ _id: { $in: moduleIds }, organization_id: orgId, project_id: projectId }).sort({ createdAt: 1 });
+        const allModules = await FeatureModule.find({ organization_id: orgId, project_id: projectId }).sort({ createdAt: 1 });
+
+        const neededModuleIds = new Set(features.map((f) => f.module_id.toString()));
+        const modById = new Map(allModules.map((m) => [m._id.toString(), m]));
+        for (const mid of [...neededModuleIds]) {
+            let mod = modById.get(mid);
+            while (mod?.parent_module_id) {
+                const pid = mod.parent_module_id.toString();
+                neededModuleIds.add(pid);
+                mod = modById.get(pid);
+            }
+        }
+        const modules = allModules.filter((m) => neededModuleIds.has(m._id.toString()));
 
         const tasks = await Task.find(
             { organization_id: orgId, project_id: projectId, feature_id: { $in: featureIds } },
             { feature_id: 1, status: 1 }
         ).lean();
 
-        const taskCountsByFeature = new Map();
-        for (const t of tasks) {
-            const key = t.feature_id?.toString();
-            if (!key) continue;
-            const prev = taskCountsByFeature.get(key) || { totalTasks: 0, completedTasks: 0 };
-            prev.totalTasks += 1;
-            if (isTaskDone(t.status)) prev.completedTasks += 1;
-            taskCountsByFeature.set(key, prev);
-        }
-
-        const featuresByModule = new Map();
-        for (const f of features) {
-            const key = f.module_id.toString();
-            const counts = taskCountsByFeature.get(f._id.toString()) || { totalTasks: 0, completedTasks: 0 };
-            const featureView = {
-                _id: f._id,
-                name: f.name,
-                module_id: f.module_id,
-                totalTasks: counts.totalTasks,
-                completedTasks: counts.completedTasks,
-                status: computeFeatureStatus(counts),
-            };
-            const arr = featuresByModule.get(key) || [];
-            arr.push(featureView);
-            featuresByModule.set(key, arr);
-        }
-
-        const moduleViews = modules.map((m) => {
-            const moduleFeatures = featuresByModule.get(m._id.toString()) || [];
-            const completedFeatures = moduleFeatures.filter(f => f.status === "completed").length;
-            return {
-                _id: m._id,
-                name: m.name,
-                totalFeatures: moduleFeatures.length,
-                completedFeatures,
-                status: computeModuleStatus(moduleFeatures),
-                features: moduleFeatures,
-            };
-        });
+        const taskCountsByFeature = buildTaskCountsByFeature(tasks);
+        const moduleViews = buildFeatureTree(modules, features, taskCountsByFeature);
 
         return res.status(200).json({
             message: "Version details retrieved successfully",
