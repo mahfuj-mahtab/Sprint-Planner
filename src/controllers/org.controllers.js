@@ -33,7 +33,7 @@ import {
     migrateParentFeaturesToSubModule,
     repairOrphanParentFeatures,
 } from "../utils/featureTree.js";
-import { parseFeatureImportPayload, importFeatureTree, FEATURE_IMPORT_TEMPLATE } from "../utils/featureImport.js";
+import { parseFeatureImportPayload, importFeatureTree, FEATURE_IMPORT_TEMPLATE, FEATURE_CSV_TEMPLATE } from "../utils/featureImport.js";
 import {
     findBillingClientsByEmail,
     grantClientPortalAccess,
@@ -1281,7 +1281,11 @@ export const orgFeatureImport = async (req, res) => {
 };
 
 export const orgFeatureImportTemplate = async (_req, res) => {
-    return res.status(200).json({ success: true, template: FEATURE_IMPORT_TEMPLATE });
+    return res.status(200).json({
+        success: true,
+        template: FEATURE_IMPORT_TEMPLATE,
+        csvTemplate: FEATURE_CSV_TEMPLATE,
+    });
 };
 
 export const orgProjectVersionList = async (req, res) => {
