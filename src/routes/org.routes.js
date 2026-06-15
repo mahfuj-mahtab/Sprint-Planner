@@ -5,6 +5,7 @@ import { authenticateToken } from "../middlewares/auth.middleware.js";
 import learningRouter from "./learning.routes.js";
 import strategyRouter from "./strategy.routes.js";
 import cmsRouter from "./cms.routes.js";
+import projectDocRouter from "./projectDoc.routes.js";
 
 const router = Router();
 router.get("/fetch/:orgId", authenticateToken, orgGet);
@@ -21,6 +22,7 @@ router.get("/:orgId/projects/:projectId/sprints", authenticateToken, orgProjectS
 router.get("/:orgId/projects/:projectId/dashboard", authenticateToken, projectDashboard);
 router.patch("/:orgId/projects/:projectId", authenticateToken, orgProjectEdit);
 router.delete("/:orgId/projects/:projectId", authenticateToken, orgProjectDelete);
+router.use("/:orgId/projects/:projectId/docs", projectDocRouter);
 
 // Feature analysis (modules + features per project)
 router.get("/:orgId/projects/:projectId/features/summary", authenticateToken, orgFeatureAnalysisSummary);

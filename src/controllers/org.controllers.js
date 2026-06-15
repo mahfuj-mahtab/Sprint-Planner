@@ -6,6 +6,7 @@ import Task from "../models/task.models.js";
 import FeatureModule from "../models/featureModule.models.js";
 import Feature from "../models/feature.models.js";
 import ProjectVersion from "../models/projectVersion.models.js";
+import ProjectDocPage from "../models/projectDocPage.models.js";
 import {
     assertCanCreateVersion,
     assertVersionDateOverlap,
@@ -1441,6 +1442,14 @@ export const orgProjectVersionUpdate = async (req, res) => {
         }
 
         await version.save();
+
+        if (body.name) {
+          await ProjectDocPage.updateOne(
+            { organization_id: orgId, project_id: projectId, version_id: versionId },
+            { $set: { title: `Release: ${version.name}` } }
+          );
+        }
+
         return res.status(200).json({ message: "Version updated", success: true, version });
     } catch (error) {
         const status = error.status || 500;
