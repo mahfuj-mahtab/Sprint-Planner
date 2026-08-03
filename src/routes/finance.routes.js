@@ -17,6 +17,10 @@ import {
   expenseDelete,
   partitionTransferCreate,
   transactionList,
+  incomeList,
+  expenseList,
+  financeYearlyReport,
+  incomeSourceMonthlyActuals,
   projectProfitSummary,
   categoryList,
   categoryCreate,
@@ -71,6 +75,10 @@ router.patch("/accounts/:accountId/partitions/:partitionId", authenticateToken, 
 router.delete("/accounts/:accountId/partitions/:partitionId", authenticateToken, partitionDelete);
 
 router.get("/transactions", authenticateToken, transactionList);
+router.get("/income", authenticateToken, incomeList);
+router.get("/expense", authenticateToken, expenseList);
+router.get("/reports/yearly", authenticateToken, financeYearlyReport);
+router.get("/income-sources/monthly-actuals", authenticateToken, incomeSourceMonthlyActuals);
 router.post("/income", authenticateToken, incomeCreate);
 router.patch("/income/:incomeId", authenticateToken, incomeUpdate);
 router.delete("/income/:incomeId", authenticateToken, incomeDelete);

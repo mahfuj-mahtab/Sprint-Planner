@@ -42,6 +42,14 @@ import {
   syncReturnForExpense,
   deleteReturnForExpense,
 } from "../utils/investorReturns.js";
+import {
+  listIncomeTransactions,
+  listExpenseTransactions,
+} from "../utils/financeTransactionQuery.js";
+import {
+  buildFinanceYearlyReport,
+  buildIncomeSourceMonthlyActuals,
+} from "../utils/financeReportQuery.js";
 
 const handleError = (res, error) => {
   const status = error.status || 500;
@@ -830,9 +838,76 @@ export const partitionTransferCreate = async (req, res) => {
   }
 };
 
+export const incomeList = async (req, res) => {
+  const { orgId } = req.params;
+  try {
+    await assertCanAccessFinance(orgId, req.user._id);
+    const result = await listIncomeTransactions(orgId, req.query);
+    return res.status(200).json({
+      message: "Income transactions retrieved",
+      success: true,
+      items: result.items,
+      pagination: result.pagination,
+    });
+  } catch (error) {
+    return handleError(res, error);
+  }
+};
+
+export const expenseList = async (req, res) => {
+  const { orgId } = req.params;
+  try {
+    await assertCanAccessFinance(orgId, req.user._id);
+    const result = await listExpenseTransactions(orgId, req.query);
+    return res.status(200).json({
+      message: "Expense transactions retrieved",
+      success: true,
+      items: result.items,
+      pagination: result.pagination,
+    });
+  } catch (error) {
+    return handleError(res, error);
+  }
+};
+
+export const financeYearlyReport = async (req, res) => {
+  const { orgId } = req.params;
+  try {
+    await assertCanAccessFinance(orgId, req.user._id);
+    const report = await buildFinanceYearlyReport(orgId, req.query);
+    return res.status(200).json({
+      message: "Finance yearly report",
+      success: true,
+      report,
+    });
+  } catch (error) {
+    return handleError(res, error);
+  }
+};
+
+export const incomeSourceMonthlyActuals = async (req, res) => {
+  const { orgId } = req.params;
+  try {
+    await getOrgForMember(orgId, req.user._id);
+    const yearParam = req.query.year;
+    const year =
+      yearParam != null && yearParam !== ""
+        ? Number.parseInt(yearParam, 10) || new Date().getFullYear()
+        : null;
+    const data = await buildIncomeSourceMonthlyActuals(orgId, year);
+    return res.status(200).json({
+      message: "Income source monthly actuals",
+      success: true,
+      ...data,
+    });
+  } catch (error) {
+    return handleError(res, error);
+  }
+};
+
 export const transactionList = async (req, res) => {
   const { orgId } = req.params;
-  const limit = Math.min(Number(req.query.limit) || 50, 100);
+  const limit = Math.min(Number(req.query.limit) || 30, 50);
 
   try {
     const { access } = await assertCanAccessFinance(orgId, req.user._id);
